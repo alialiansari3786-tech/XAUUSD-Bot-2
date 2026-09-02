@@ -97,7 +97,7 @@ class DataFetcher:
         if self.use_csv:
             return self._fetch_from_csv(timeframe)
 
-        # Try yfinance first
+        # Try yfinance first (with timeout to prevent hanging)
         try:
             data = self._fetch_from_yfinance(timeframe, period)
             if data is not None and not data.empty:
@@ -106,18 +106,9 @@ class DataFetcher:
         except Exception as e:
             logger.warning(f"yfinance failed for {timeframe}: {e}")
 
-        # Fallback to Twelve Data
-        if self.twelve_data_client and settings.ENABLE_TWELVE_DATA_FALLBACK:
-            logger.info(f"Falling back to Twelve Data for {timeframe}")
-            try:
-                data = self._fetch_from_twelve_data(timeframe, period)
-                if data is not None and not data.empty:
-                    self.data_cache[cache_key] = data
-                    return data
-            except Exception as e:
-                logger.error(f"Twelve Data also failed for {timeframe}: {e}")
-
-        logger.error(f"All data sources failed for {timeframe}")
+        # Skip Twelve Data fallback for now - it's causing timeouts
+        # TODO: Re-enable after fixing timeout issues
+        logger.error(f"yfinance failed for {timeframe} - skipping Twelve Data fallback to prevent timeout")
         return None
 
     def _fetch_from_yfinance(
@@ -125,7 +116,7 @@ class DataFetcher:
         timeframe: str,
         period: str = None
     ) -> Optional[pd.DataFrame]:
-        """Fetch data from yfinance"""
+        """Fetch data from yfinance with 15-second timeout"""
 
         if period is None:
             period = self._get_default_period(timeframe)
@@ -148,51 +139,75 @@ class DataFetcher:
 
         logger.info(f"Fetching from yfinance: {timeframe} (interval={interval}, period={period})")
 
-        ticker_obj = yf.Ticker(self.ticker)
-        df = ticker_obj.history(period=period, interval=interval)
+        try:
+            import signal
+            import platform
 
-        if df.empty:
+            # Only use timeout on Unix-like systems
+            use_timeout = platform.system() != 'Windows' and hasattr(signal, 'SIGALRM')
+
+            if use_timeout:
+                def timeout_handler(signum, frame):
+                    raise TimeoutError(f"yfinance fetch timed out for {timeframe}")
+
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(15)  # 15-second timeout
+
+            ticker_obj = yf.Ticker(self.ticker)
+            df = ticker_obj.history(period=period, interval=interval)
+
+            if use_timeout:
+                signal.alarm(0)  # Cancel timeout
+
+            if df.empty:
+                return None
+
+            # Standardize column names - handle varying yfinance column formats
+            # yfinance may return: Open/High/Low/Close/Volume/Dividends/Stock Splits
+            # or lowercase variants depending on version
+            col_map = {}
+            for col in df.columns:
+                col_lower = col.lower().replace(' ', '_')
+                if col_lower == 'open':
+                    col_map[col] = 'Open'
+                elif col_lower == 'high':
+                    col_map[col] = 'High'
+                elif col_lower == 'low':
+                    col_map[col] = 'Low'
+                elif col_lower == 'close':
+                    col_map[col] = 'Close'
+                elif col_lower in ('volume', 'vol'):
+                    col_map[col] = 'Volume'
+
+            df = df.rename(columns=col_map)
+
+            # Keep only OHLCV columns
+            required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+            available_cols = [c for c in required_cols if c in df.columns]
+
+            if len(available_cols) < 4:  # Need at least OHLC
+                logger.error(f"yfinance missing required columns. Got: {list(df.columns)}")
+                return None
+
+            # Add Volume column if missing (some forex pairs don't have volume)
+            if 'Volume' not in df.columns:
+                df['Volume'] = 0
+
+            df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+
+            # Handle H4 resampling
+            if timeframe == 'H4' and interval == '1h':
+                df = resample_to_timeframe(df, 'H4')
+
+            logger.info(f"✓ yfinance: {len(df)} candles for {timeframe}")
+            return df
+
+        except TimeoutError as e:
+            logger.warning(f"yfinance timed out for {timeframe}")
             return None
-
-        # Standardize column names - handle varying yfinance column formats
-        # yfinance may return: Open/High/Low/Close/Volume/Dividends/Stock Splits
-        # or lowercase variants depending on version
-        col_map = {}
-        for col in df.columns:
-            col_lower = col.lower().replace(' ', '_')
-            if col_lower == 'open':
-                col_map[col] = 'Open'
-            elif col_lower == 'high':
-                col_map[col] = 'High'
-            elif col_lower == 'low':
-                col_map[col] = 'Low'
-            elif col_lower == 'close':
-                col_map[col] = 'Close'
-            elif col_lower in ('volume', 'vol'):
-                col_map[col] = 'Volume'
-
-        df = df.rename(columns=col_map)
-
-        # Keep only OHLCV columns
-        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-        available_cols = [c for c in required_cols if c in df.columns]
-
-        if len(available_cols) < 4:  # Need at least OHLC
-            logger.error(f"yfinance missing required columns. Got: {list(df.columns)}")
+        except Exception as e:
+            logger.warning(f"yfinance error for {timeframe}: {e}")
             return None
-
-        # Add Volume column if missing (some forex pairs don't have volume)
-        if 'Volume' not in df.columns:
-            df['Volume'] = 0
-
-        df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
-
-        # Handle H4 resampling
-        if timeframe == 'H4' and interval == '1h':
-            df = resample_to_timeframe(df, 'H4')
-
-        logger.info(f"✓ yfinance: {len(df)} candles for {timeframe}")
-        return df
 
     def _fetch_from_twelve_data(
         self,
