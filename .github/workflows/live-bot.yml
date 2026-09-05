@@ -33,6 +33,10 @@ jobs:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
         PYTHONPATH: ${{ github.workspace }}
+        # TEMPORARY: forces analysis to run on weekends too, so the
+        # timeout fix can be verified before Monday. Remove this line
+        # (or set it to "false") once you've confirmed the fix works.
+        FORCE_MARKET_OPEN: "true"
       timeout-minutes: 5
       run: |
         python -c "
