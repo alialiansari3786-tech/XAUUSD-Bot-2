@@ -4,7 +4,6 @@ Coordinates all trading methods and manages 15-minute scanning
 """
 
 import time
-import os
 import schedule
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -73,14 +72,6 @@ class TradingBot:
         Returns:
             Tuple of (is_open: bool, reason: str)
         """
-        # TEMPORARY TESTING OVERRIDE: lets you verify the timeout fix on a
-        # weekend, when the real gold market is closed. Set the
-        # FORCE_MARKET_OPEN=true env var / GitHub secret to bypass the
-        # weekday check below. Set it back to false (or remove it) once
-        # you've confirmed the fix and want normal weekday-only behavior.
-        if os.getenv('FORCE_MARKET_OPEN', 'false').lower() == 'true':
-            return True, "Market forced open (TESTING MODE - weekend override active)"
-
         now_utc = datetime.now(pytz.UTC)
         current_hour = now_utc.hour
         current_minute = now_utc.minute
