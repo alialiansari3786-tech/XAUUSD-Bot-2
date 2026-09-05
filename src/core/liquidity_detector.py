@@ -219,19 +219,34 @@ class LiquidityDetector:
         self,
         df: pd.DataFrame,
         timeframe: str,
-        use_atr: bool = True
+        use_atr: bool = True,
+        lookback: int = 300
     ) -> List[LiquidityLevel]:
         """
         Detect Equal Highs (EQH) and Equal Lows (EQL)
         Uses ATR-based tolerance from Guardeer logic
 
+        PERFORMANCE NOTE: The original implementation compared every
+        candle to every other candle (O(n^2) pure-Python loop). On a
+        1-year H1 history (~5,700 candles) that alone produces
+        600,000+ "equal" matches, each turned into a LiquidityLevel
+        object; on M15/M5 histories it's worse. That flood of
+        near-duplicate levels is what was causing the bot to hang for
+        minutes downstream (every level can trigger a "sweep", and
+        each sweep re-triggers a full OB+FVG+SAR scan). This version
+        sorts once and clusters nearby prices (O(n log n)), and only
+        looks at the most recent `lookback` candles, since equal
+        highs/lows are a recent-price-action concept, not an all-time
+        pairwise scan.
+
         Args:
             df: OHLCV DataFrame
             timeframe: Current timeframe
             use_atr: Use ATR for tolerance calculation
+            lookback: Only consider the most recent N candles
 
         Returns:
-            List of EQH/EQL levels
+            List of EQH/EQL levels (one per cluster of equal prices)
         """
 
         levels = []
@@ -239,55 +254,83 @@ class LiquidityDetector:
         if len(df) < settings.ATR_PERIOD:
             return levels
 
-        # Calculate ATR for tolerance
+        # Calculate ATR for tolerance (vectorized, no .apply/axis=1)
         if use_atr:
-            df = df.copy()
-            df['TR'] = df[['High', 'Low', 'Close']].apply(
-                lambda x: max(
-                    x['High'] - x['Low'],
-                    abs(x['High'] - x['Close']),
-                    abs(x['Low'] - x['Close'])
-                ),
-                axis=1
-            )
-            atr = df['TR'].rolling(settings.ATR_PERIOD).mean().iloc[-1]
+            high_low = df['High'] - df['Low']
+            high_close = (df['High'] - df['Close'].shift()).abs()
+            low_close = (df['Low'] - df['Close'].shift()).abs()
+            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            atr = true_range.rolling(settings.ATR_PERIOD).mean().iloc[-1]
             tolerance = atr * settings.EQH_EQL_THRESHOLD_MULTIPLIER
         else:
             # Use percentage-based tolerance
             tolerance = df['Close'].iloc[-1] * 0.001  # 0.1%
 
-        # Find Equal Highs
-        highs = df['High'].values
-        for i in range(len(highs) - 1):
-            for j in range(i + 1, len(highs)):
-                if abs(highs[i] - highs[j]) <= tolerance:
-                    # Equal high found
-                    levels.append(LiquidityLevel(
-                        level_type=LiquidityType.EQH,
-                        price=(highs[i] + highs[j]) / 2,
-                        timestamp=df.index[j],
-                        timeframe=timeframe,
-                        taken=False,
-                        reference_points=[highs[i], highs[j]],
-                        tolerance=tolerance
-                    ))
+        if pd.isna(tolerance) or tolerance <= 0:
+            return levels
 
-        # Find Equal Lows
-        lows = df['Low'].values
-        for i in range(len(lows) - 1):
-            for j in range(i + 1, len(lows)):
-                if abs(lows[i] - lows[j]) <= tolerance:
-                    # Equal low found
-                    levels.append(LiquidityLevel(
-                        level_type=LiquidityType.EQL,
-                        price=(lows[i] + lows[j]) / 2,
-                        timestamp=df.index[j],
-                        timeframe=timeframe,
-                        taken=False,
-                        reference_points=[lows[i], lows[j]],
-                        tolerance=tolerance
-                    ))
+        recent = df.tail(lookback)
+        timestamps = recent.index
 
+        levels.extend(self._cluster_equal_prices(
+            recent['High'].to_numpy(), timestamps, tolerance, LiquidityType.EQH, timeframe
+        ))
+        levels.extend(self._cluster_equal_prices(
+            recent['Low'].to_numpy(), timestamps, tolerance, LiquidityType.EQL, timeframe
+        ))
+
+        return levels
+
+    def _cluster_equal_prices(
+        self,
+        prices: np.ndarray,
+        timestamps: pd.Index,
+        tolerance: float,
+        level_type: 'LiquidityType',
+        timeframe: str
+    ) -> List[LiquidityLevel]:
+        """
+        Cluster near-equal prices in O(n log n) instead of comparing
+        every pair. Sort the prices, keep track of which candle each
+        sorted value came from, and walk through once: consecutive
+        values within `tolerance` of each other form one cluster,
+        which becomes a single EQH/EQL level (not one level per pair).
+        """
+
+        if len(prices) == 0:
+            return []
+
+        order = np.argsort(prices)
+        sorted_prices = prices[order]
+
+        levels = []
+        cluster_prices = [sorted_prices[0]]
+        cluster_positions = [order[0]]
+
+        def flush():
+            if len(cluster_prices) >= 2:
+                avg_price = float(np.mean(cluster_prices))
+                latest_pos = max(cluster_positions)
+                levels.append(LiquidityLevel(
+                    level_type=level_type,
+                    price=avg_price,
+                    timestamp=timestamps[latest_pos],
+                    timeframe=timeframe,
+                    taken=False,
+                    reference_points=[float(p) for p in cluster_prices],
+                    tolerance=tolerance
+                ))
+
+        for k in range(1, len(sorted_prices)):
+            if sorted_prices[k] - cluster_prices[-1] <= tolerance:
+                cluster_prices.append(sorted_prices[k])
+                cluster_positions.append(order[k])
+            else:
+                flush()
+                cluster_prices = [sorted_prices[k]]
+                cluster_positions = [order[k]]
+
+        flush()
         return levels
 
     def detect_old_levels(
