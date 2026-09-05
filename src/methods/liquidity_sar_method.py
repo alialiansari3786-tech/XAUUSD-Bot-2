@@ -133,12 +133,26 @@ class LiquiditySARMethod:
             logger.debug("No liquidity sweeps detected")
             return None
 
+        logger.debug(f"Validating {len(sweeps)} liquidity sweep(s)")
+
         # Step 3: For each sweep, check full validation chain
+        #
+        # _identify_trade_zones() runs OB + FVG + SAR detection across
+        # 4 timeframes and only depends on `bias`, not on the specific
+        # sweep event. The original code called it fresh inside this
+        # loop for every sweep, so with dozens/hundreds of sweeps the
+        # same expensive multi-timeframe scan was repeated that many
+        # times - this (combined with the EQH/EQL explosion fixed in
+        # LiquidityDetector) is what caused the multi-minute hang.
+        # Cache the result per bias so it's computed at most twice.
+        zone_cache: Dict[Bias, List[Dict]] = {}
+
         for sweep in sweeps:
             signal = self._validate_full_chain(
                 sweep,
                 data,
-                all_liquidity
+                all_liquidity,
+                zone_cache
             )
 
             if signal:
@@ -150,7 +164,8 @@ class LiquiditySARMethod:
         self,
         sweep: Dict,
         data: Dict[str, pd.DataFrame],
-        all_liquidity: List
+        all_liquidity: List,
+        zone_cache: Optional[Dict[Bias, List[Dict]]] = None
     ) -> Optional[LiquiditySARSignal]:
         """
         Validate complete 8-layer confirmation chain
@@ -159,6 +174,9 @@ class LiquiditySARMethod:
             sweep: Liquidity sweep event
             data: Timeframe data
             all_liquidity: All liquidity levels
+            zone_cache: Optional dict caching _identify_trade_zones()
+                results by bias, since that scan is bias-only and
+                identical across every sweep of the same bias
 
         Returns:
             Signal if all layers pass
@@ -171,7 +189,12 @@ class LiquiditySARMethod:
         liquidity_type = "grab"  # Assume grab for now (stronger than sweep)
 
         # Layer 2: Identify trade zone (5m, 15m, 30m, max 1H)
-        trade_zones = self._identify_trade_zones(data, sweep, bias)
+        if zone_cache is not None:
+            if bias not in zone_cache:
+                zone_cache[bias] = self._identify_trade_zones(data, sweep, bias)
+            trade_zones = zone_cache[bias]
+        else:
+            trade_zones = self._identify_trade_zones(data, sweep, bias)
 
         if not trade_zones:
             return None
