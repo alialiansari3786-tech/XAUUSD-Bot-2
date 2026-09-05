@@ -4,6 +4,7 @@ Coordinates all trading methods and manages 15-minute scanning
 """
 
 import time
+import os
 import schedule
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -18,6 +19,7 @@ from src.methods.liquidity_sar_method import LiquiditySARMethod
 from src.integrations.telegram_bot import TelegramNotifier
 from src.integrations.chart_generator import ChartGenerator
 from src.utils.logger import setup_logger
+from src.utils.signal_state import is_duplicate, record_sent
 
 
 logger = setup_logger(
@@ -72,6 +74,14 @@ class TradingBot:
         Returns:
             Tuple of (is_open: bool, reason: str)
         """
+        # TEMPORARY TESTING OVERRIDE: lets you verify the timeout fix on a
+        # weekend, when the real gold market is closed. Set the
+        # FORCE_MARKET_OPEN=true env var / GitHub secret to bypass the
+        # weekday check below. Set it back to false (or remove it) once
+        # you've confirmed the fix and want normal weekday-only behavior.
+        if os.getenv('FORCE_MARKET_OPEN', 'false').lower() == 'true':
+            return True, "Market forced open (TESTING MODE - weekend override active)"
+
         now_utc = datetime.now(pytz.UTC)
         current_hour = now_utc.hour
         current_minute = now_utc.minute
@@ -216,6 +226,17 @@ class TradingBot:
         try:
             logger.info(f"Processing signal: {signal.method}")
 
+            # Skip if this is effectively the same setup we already
+            # alerted on (same bias, entry/SL/TP within tolerance) -
+            # prevents re-sending the same signal every 15-minute scan
+            # while the setup remains valid.
+            if is_duplicate(signal):
+                logger.info(
+                    f"Duplicate signal for {signal.method} "
+                    f"(same setup as last alert) - skipping Telegram send"
+                )
+                return
+
             # Chart generation disabled
             # chart_path = None
             # try:
@@ -234,6 +255,7 @@ class TradingBot:
 
             if success:
                 logger.info("✓ Signal sent to Telegram")
+                record_sent(signal)
             else:
                 logger.warning("✗ Failed to send signal to Telegram")
 
