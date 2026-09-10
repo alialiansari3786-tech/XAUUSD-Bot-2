@@ -5,7 +5,7 @@ Manages environment variables and application settings
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -40,6 +40,16 @@ class Settings:
     # GC=F = Gold Futures (COMEX) - XAUUSD=X was delisted by yfinance
     YFINANCE_TICKER: str = os.getenv('YFINANCE_TICKER', 'GC=F')
     DATA_STORAGE_PATH: Path = BASE_DIR / os.getenv('DATA_STORAGE_PATH', 'data/')
+
+    # Live spot-basis correction
+    # GC=F is a futures contract and can trade at a premium/discount
+    # to true physical gold spot (contango/backwardation). To correct
+    # for this without a hardcoded/stale offset, the bot computes a
+    # live basis each scan cycle against the average of two
+    # gold-backed crypto tokens that track spot closely: PAXG-USD
+    # and XAUT-USD.
+    ENABLE_SPOT_BASIS_CORRECTION: bool = os.getenv('ENABLE_SPOT_BASIS_CORRECTION', 'true').lower() == 'true'
+    SPOT_PROXY_TICKERS: List[str] = ['PAXG-USD', 'XAUT-USD']
 
     # Twelve Data API (Fallback)
     TWELVE_DATA_API_KEY: str = os.getenv('TWELVE_DATA_API_KEY', '')
