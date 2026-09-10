@@ -33,6 +33,14 @@ jobs:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
         PYTHONPATH: ${{ github.workspace }}
+        # TEMPORARY: shows *why* each method returns no signal (which
+        # gate failed, or how close the confluence score got e.g.
+        # "5/7"), instead of just "No signals found". The code already
+        # logs this detail, it's just filtered out at the default
+        # INFO level. Set back to "INFO" (or remove this line) once
+        # you've seen enough runs to judge whether 0 signals is
+        # expected market behavior or a logic issue.
+        LOG_LEVEL: "DEBUG"
       timeout-minutes: 5
       run: |
         python -c "
