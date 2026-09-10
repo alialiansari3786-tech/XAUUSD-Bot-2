@@ -36,6 +36,12 @@ class DataFetcher:
         self.data_cache: Dict[str, pd.DataFrame] = {}
         self.cache_file = settings.DATA_STORAGE_PATH / f"{self.ticker.replace('=', '_')}_cache.pkl"
 
+        # Live spot-basis correction cache (see _get_live_basis) - avoids
+        # re-fetching PAXG-USD/XAUT-USD for every single timeframe
+        # within one scan cycle
+        self._basis_cache: Optional[float] = None
+        self._basis_cache_time: Optional[datetime] = None
+
         # Initialize Twelve Data client
         self.twelve_data_client = None
         if settings.TWELVE_DATA_API_KEY and settings.ENABLE_TWELVE_DATA_FALLBACK:
@@ -101,6 +107,7 @@ class DataFetcher:
         try:
             data = self._fetch_from_yfinance(timeframe, period)
             if data is not None and not data.empty:
+                data = self._apply_spot_basis(data)
                 self.data_cache[cache_key] = data
                 return data
         except Exception as e:
@@ -428,24 +435,147 @@ class DataFetcher:
         logger.info(f"Fetched data for {len(results)}/{len(timeframes)} timeframes")
         return results
 
+    def _fetch_spot_proxy_price(self, ticker: str) -> Optional[float]:
+        """Fetch the latest price for a gold-backed token (PAXG-USD / XAUT-USD)"""
+        try:
+            obj = yf.Ticker(ticker)
+            data = obj.history(period='1d', interval='1m')
+            if not data.empty:
+                return float(data['Close'].iloc[-1])
+        except Exception as e:
+            logger.warning(f"Failed to fetch spot proxy price for {ticker}: {e}")
+        return None
+
+    def _get_spot_proxy_average(self) -> Optional[float]:
+        """
+        Average of PAXG-USD and XAUT-USD, used as a live proxy for true
+        gold spot price. Both are asset-backed tokens that track physical
+        gold closely, unlike GC=F, which is a futures contract and can
+        drift from spot due to contango/backwardation.
+
+        Falls back to whichever single ticker succeeds if the other
+        fails; returns None only if both fail.
+        """
+        prices = []
+        for ticker in settings.SPOT_PROXY_TICKERS:
+            price = self._fetch_spot_proxy_price(ticker)
+            if price is not None:
+                prices.append(price)
+            else:
+                logger.warning(f"Spot proxy {ticker} unavailable this cycle")
+
+        if not prices:
+            return None
+
+        avg = sum(prices) / len(prices)
+        logger.debug(f"Spot proxy average from {len(prices)}/{len(settings.SPOT_PROXY_TICKERS)} source(s): {avg:.2f}")
+        return avg
+
+    def _get_live_basis(self) -> float:
+        """
+        Compute the live futures-to-spot basis: current GC=F price minus
+        the PAXG-USD/XAUT-USD average. This is recalculated fresh each
+        scan cycle (cached briefly to avoid re-fetching per timeframe)
+        instead of using a hardcoded/stale offset, so it tracks whatever
+        the real current futures premium/discount actually is.
+
+        Returns 0.0 (no correction applied) if the proxy price can't be
+        fetched at all, so the bot degrades gracefully to raw GC=F
+        pricing rather than failing.
+        """
+
+        if not settings.ENABLE_SPOT_BASIS_CORRECTION:
+            return 0.0
+
+        now = datetime.now()
+        if (
+            self._basis_cache is not None
+            and self._basis_cache_time is not None
+            and (now - self._basis_cache_time).total_seconds() < settings.SCAN_INTERVAL_MINUTES * 60
+        ):
+            return self._basis_cache
+
+        try:
+            ticker_obj = yf.Ticker(self.ticker)
+            gc_data = ticker_obj.history(period='1d', interval='1m')
+            gc_price = float(gc_data['Close'].iloc[-1]) if not gc_data.empty else None
+        except Exception as e:
+            logger.warning(f"Could not fetch {self.ticker} price for basis calculation: {e}")
+            gc_price = None
+
+        if gc_price is None:
+            logger.warning("No futures price available for basis calculation - skipping correction this cycle")
+            self._basis_cache = 0.0
+            self._basis_cache_time = now
+            return 0.0
+
+        proxy_avg = self._get_spot_proxy_average()
+
+        if proxy_avg is None:
+            logger.warning(
+                f"Both {' and '.join(settings.SPOT_PROXY_TICKERS)} unavailable - "
+                f"using raw {self.ticker} futures price uncorrected this cycle"
+            )
+            basis = 0.0
+        else:
+            basis = gc_price - proxy_avg
+            logger.info(
+                f"Live spot basis: {self.ticker}={gc_price:.2f}, "
+                f"proxy_avg={proxy_avg:.2f}, basis={basis:+.2f}"
+            )
+
+        self._basis_cache = basis
+        self._basis_cache_time = now
+        return basis
+
+    def _apply_spot_basis(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Shift OHLC prices by the live futures-to-spot basis so all
+        downstream detectors, methods, and signal entry/SL/TP levels
+        reflect corrected spot pricing rather than raw futures pricing.
+
+        This is a uniform vertical shift of the whole series, so it
+        doesn't affect any relative price-action logic (ranges, gaps,
+        structure, ATR) - only the absolute price level.
+        """
+
+        if not settings.ENABLE_SPOT_BASIS_CORRECTION:
+            return df
+
+        basis = self._get_live_basis()
+
+        if basis == 0.0:
+            return df
+
+        df = df.copy()
+        for col in ('Open', 'High', 'Low', 'Close'):
+            if col in df.columns:
+                df[col] = df[col] - basis
+
+        return df
+
     def get_latest_price(self) -> Optional[float]:
-        """Get latest market price"""
+        """Get latest market price, corrected toward true spot (see _get_live_basis)"""
 
         try:
             # Try yfinance first
             ticker_obj = yf.Ticker(self.ticker)
             data = ticker_obj.history(period='1d', interval='1m')
 
+            raw_price = None
             if not data.empty:
-                return float(data['Close'].iloc[-1])
-
-            # Fallback to Twelve Data
-            if self.twelve_data_client:
+                raw_price = float(data['Close'].iloc[-1])
+            elif self.twelve_data_client:
+                # Fallback to Twelve Data
                 quote = self.twelve_data_client.quote(symbol=settings.TWELVE_DATA_SYMBOL)
                 if quote and 'close' in quote:
-                    return float(quote['close'])
+                    raw_price = float(quote['close'])
 
-            return None
+            if raw_price is None:
+                return None
+
+            basis = self._get_live_basis()
+            return raw_price - basis
 
         except Exception as e:
             logger.error(f"Error getting latest price: {e}")
