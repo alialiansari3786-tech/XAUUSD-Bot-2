@@ -20,6 +20,7 @@ from src.integrations.telegram_bot import TelegramNotifier
 from src.integrations.chart_generator import ChartGenerator
 from src.utils.logger import setup_logger
 from src.utils.signal_state import is_duplicate, record_sent
+from src.utils.daily_heartbeat import should_send_heartbeat, record_heartbeat_sent
 
 
 logger = setup_logger(
@@ -131,6 +132,24 @@ class TradingBot:
         try:
             # Check if market is open
             should_run, market_status = self.should_analyze()
+
+            # Once per UTC calendar day, send a Telegram heartbeat
+            # regardless of whether the market is open or a signal is
+            # found. This is the only way to independently confirm
+            # "the bot ran and Telegram delivery works today" instead
+            # of silence being ambiguous between "no signal" and
+            # "something's broken."
+            if should_send_heartbeat():
+                heartbeat_sent = self.telegram.send_status_update_sync(
+                    f"Daily check-in - {datetime.now().strftime('%Y-%m-%d')}\n"
+                    f"Market Status: {market_status}\n"
+                    f"Bot is running and Telegram is connected."
+                )
+                if heartbeat_sent:
+                    logger.info("✓ Daily heartbeat sent to Telegram")
+                    record_heartbeat_sent()
+                else:
+                    logger.warning("✗ Failed to send daily heartbeat to Telegram")
 
             # Log market status periodically (every hour)
             now = datetime.now()
