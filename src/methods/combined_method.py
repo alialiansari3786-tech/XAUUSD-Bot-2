@@ -315,6 +315,10 @@ class CombinedMethod:
                 ]
 
         if not recent_mss:
+            logger.debug(
+                f"No recent MSS matching bias {bias.value} found on M15/M5 "
+                f"(had {len(structure_events)} structure events total) - no entry"
+            )
             return None
 
         last_mss = recent_mss[-1]
@@ -322,6 +326,10 @@ class CombinedMethod:
         # Check if MSS is recent
         mss_idx = entry_df.index.get_loc(last_mss.timestamp)
         if len(entry_df) - mss_idx > 15:
+            logger.debug(
+                f"Most recent matching MSS is {len(entry_df) - mss_idx} bars old "
+                f"(max 15) on {entry_tf} - too stale, no entry"
+            )
             return None
 
         # Detect FVGs on entry timeframe
