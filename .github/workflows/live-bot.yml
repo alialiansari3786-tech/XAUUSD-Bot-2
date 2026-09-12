@@ -85,16 +85,17 @@ jobs:
         " || exit 1
 
     - name: Persist signal state
-      # Commits the updated data/signal-dedup state back to the repo
+      # Commits the updated dedup + heartbeat state back to the repo
       # so the next (stateless) run knows what was already sent, and
-      # doesn't re-alert on the same setup. Requires "Read and write
-      # permissions" for GITHUB_TOKEN under
-      # Settings -> Actions -> General -> Workflow permissions.
+      # doesn't re-alert on the same setup or re-send today's
+      # heartbeat. Requires "Read and write permissions" for
+      # GITHUB_TOKEN under Settings -> Actions -> General -> Workflow
+      # permissions.
       if: always()
       run: |
         git config --local user.email "actions@github.com"
         git config --local user.name "github-actions[bot]"
-        git add state/last_signals.json 2>/dev/null || true
+        git add state/ 2>/dev/null || true
         if git diff --cached --quiet; then
           echo "No signal state changes to commit"
         else
