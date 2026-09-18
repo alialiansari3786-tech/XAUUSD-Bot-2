@@ -307,16 +307,33 @@ class SARDetector:
         - Strong close in opposite direction
         - Reversal candle pattern
 
+        BUG FIX: this used to always check df.tail(lookback) - the most
+        recent `lookback` candles of the WHOLE input dataframe -
+        regardless of when this specific sar_level was actually last
+        touched. Since price is essentially never sitting exactly on
+        an arbitrary historical level at this exact instant, that
+        check was structurally almost-always False (confirmed via
+        real logs: 100% failure rate across hundreds of calls). This
+        now checks the candles around the level's own last recorded
+        touch (already tracked correctly by _update_sar_status),
+        falling back to the tail of df only if the level has no
+        recorded touch yet.
+
         Args:
             df: OHLCV DataFrame
             sar_level: SAR level to check
-            lookback: Recent candles to check
+            lookback: Number of candles around the touch to check
 
         Returns:
             True if rejection detected
         """
 
-        recent = df.tail(lookback)
+        if sar_level.last_touch_time is not None and sar_level.last_touch_time in df.index:
+            touch_loc = df.index.get_loc(sar_level.last_touch_time)
+            start = max(0, touch_loc - lookback + 1)
+            recent = df.iloc[start:touch_loc + 1]
+        else:
+            recent = df.tail(lookback)
 
         for idx, row in recent.iterrows():
             if sar_level.level_type == 'support':
@@ -354,16 +371,26 @@ class SARDetector:
         - Body close through level
         - Strong momentum
 
+        Same fix as identify_rejection(): check the candles around the
+        level's own last recorded touch instead of the tail of the
+        whole input dataframe, which was checking "right now" instead
+        of the level being tested.
+
         Args:
             df: OHLCV DataFrame
             sar_level: SAR level to check
-            lookback: Recent candles to check
+            lookback: Number of candles around the touch to check
 
         Returns:
             True if breakout detected
         """
 
-        recent = df.tail(lookback)
+        if sar_level.last_touch_time is not None and sar_level.last_touch_time in df.index:
+            touch_loc = df.index.get_loc(sar_level.last_touch_time)
+            start = max(0, touch_loc - lookback + 1)
+            recent = df.iloc[start:touch_loc + 1]
+        else:
+            recent = df.tail(lookback)
 
         for idx, row in recent.iterrows():
             if sar_level.level_type == 'support':
