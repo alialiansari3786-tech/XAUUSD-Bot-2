@@ -168,6 +168,7 @@ class PercentageMethod:
         # Get recent MSS
         recent_mss = [e for e in structure_events if e.type == StructureType.MSS]
         if not recent_mss:
+            logger.debug(f"No MSS found on D1 ({len(structure_events)} structure events total)")
             return False, info
 
         last_mss = recent_mss[-1]
@@ -179,6 +180,7 @@ class PercentageMethod:
         after_mss = daily_df.iloc[mss_idx:]
 
         if len(after_mss) < 2:
+            logger.debug(f"Only {len(after_mss)} D1 candle(s) since last MSS - not enough to assess pullback")
             return False, info
 
         if last_mss.bias == Bias.BULLISH:
@@ -191,6 +193,7 @@ class PercentageMethod:
 
             # Check 25% requirement
             if pullback_pct < 25.0:
+                logger.debug(f"D1 bullish pullback {pullback_pct:.1f}% < required 25.0%")
                 return False, info
 
             info['high'] = high_after_mss
@@ -210,6 +213,7 @@ class PercentageMethod:
             pullback_pct = ((current_price - low_after_mss) / low_after_mss) * 100
 
             if pullback_pct < 25.0:
+                logger.debug(f"D1 bearish pullback {pullback_pct:.1f}% < required 25.0%")
                 return False, info
 
             info['high'] = after_mss['High'].max()
@@ -252,6 +256,7 @@ class PercentageMethod:
         ]
 
         if not recent_mss:
+            logger.debug(f"No H1 MSS matching Daily bias {daily_info['bias'].value} ({len(structure_events)} H1 structure events total)")
             return False, info
 
         last_mss = recent_mss[-1]
@@ -262,6 +267,7 @@ class PercentageMethod:
         after_mss = h1_df.iloc[mss_idx:]
 
         if len(after_mss) < 2:
+            logger.debug(f"Only {len(after_mss)} H1 candle(s) since last matching MSS - not enough to assess pullback")
             return False, info
 
         if last_mss.bias == Bias.BULLISH:
@@ -271,6 +277,7 @@ class PercentageMethod:
 
             # Check 37.5% requirement
             if pullback_pct < 37.5:
+                logger.debug(f"H1 bullish pullback {pullback_pct:.1f}% < required 37.5%")
                 return False, info
 
             info['high'] = high_after_mss
@@ -291,6 +298,7 @@ class PercentageMethod:
             if current_price <= info['zones']['0.375']:
                 info['in_discount'] = True
             else:
+                logger.debug(f"H1 price {current_price:.2f} not yet in discount zone (need <= {info['zones']['0.375']:.2f})")
                 return False, info
 
             # Detect OBs
@@ -304,6 +312,7 @@ class PercentageMethod:
             pullback_pct = ((current_price - low_after_mss) / low_after_mss) * 100
 
             if pullback_pct < 37.5:
+                logger.debug(f"H1 bearish pullback {pullback_pct:.1f}% < required 37.5%")
                 return False, info
 
             info['high'] = after_mss['High'].max()
@@ -324,6 +333,7 @@ class PercentageMethod:
             if current_price >= info['zones']['0.375']:
                 info['in_premium'] = True
             else:
+                logger.debug(f"H1 price {current_price:.2f} not yet in premium zone (need >= {info['zones']['0.375']:.2f})")
                 return False, info
 
             obs = self.ob_detector.detect_order_blocks(after_mss, 'H1')
@@ -363,6 +373,7 @@ class PercentageMethod:
         ]
 
         if not recent_mss:
+            logger.debug(f"No M5 MSS matching bias {bias.value} ({len(structure_events)} M5 structure events total)")
             return None
 
         last_mss = recent_mss[-1]
@@ -370,6 +381,7 @@ class PercentageMethod:
         # Check if MSS is recent (within last 20 candles)
         mss_idx = m5_df.index.get_loc(last_mss.timestamp)
         if len(m5_df) - mss_idx > 20:
+            logger.debug(f"Most recent matching M5 MSS is {len(m5_df) - mss_idx} bars old (max 20) - too stale")
             return None
 
         # Detect OBs
@@ -377,6 +389,7 @@ class PercentageMethod:
         fresh_obs = [ob for ob in obs if ob.fresh and ob.bias == bias]
 
         if not fresh_obs:
+            logger.debug(f"No fresh M5 order blocks matching bias {bias.value}")
             return None
 
         # Get closest OB to current price
