@@ -277,12 +277,27 @@ class StructureDetector:
         """
         Detect Market Structure Shift (MSS)
 
-        For Combined Method: Second last swing break with body close preferred
-        For Method 2: Valid Swing requires 2 candles liquidity + body close
+        A bullish MSS = after a swing LOW confirms (a lower low during
+        a downtrend), price later closes back ABOVE the swing HIGH
+        that preceded that low - the last lower high gets broken,
+        signalling a reversal. Bearish MSS is the mirror: after a
+        swing HIGH confirms, price later closes back BELOW the swing
+        LOW that preceded it.
+
+        BUG FIX: this used to search for the break candle in the
+        window BETWEEN a swing and the one immediately before it -
+        which is the leg leading INTO that swing, before any reversal
+        has happened yet, not the leg AFTER it where a genuine break
+        would actually occur. That made real MSS events almost
+        undetectable: confirmed on a clean synthetic reversal pattern
+        (lower high -> lower low -> strong break back above the prior
+        high), the old code found zero MSS events. This version
+        searches forward from the confirming swing to the end of the
+        available data for the first close that breaks the prior
+        opposite-type swing's price.
         """
 
         events = []
-        current_bias = Bias.NEUTRAL
 
         # Combine and sort all swings
         all_swings = sorted(
@@ -290,22 +305,17 @@ class StructureDetector:
             key=lambda x: x.timestamp
         )
 
-        for i in range(2, len(all_swings)):
+        for i in range(1, len(all_swings)):
             current_swing = all_swings[i]
             previous_swing = all_swings[i - 1]
-            second_last_swing = all_swings[i - 2]
 
-            # Check for bullish MSS (break above previous swing high)
+            # Bullish MSS: swing low confirmed after a swing high ->
+            # look forward from the low for a close back above that high
             if not current_swing.is_high and previous_swing.is_high:
-                # Find candles that broke above the swing high
-                break_candles = df[
-                    (df.index > previous_swing.timestamp) &
-                    (df.index <= current_swing.timestamp) &
-                    (df['Close'] > previous_swing.price)
-                ]
+                window = df[df.index > current_swing.timestamp]
+                break_candles = window[window['Close'] > previous_swing.price]
 
                 if not break_candles.empty:
-                    # MSS confirmed with body close
                     break_index = break_candles.index[0]
                     break_candle = df.loc[break_index]
 
@@ -319,15 +329,11 @@ class StructureDetector:
                         confirmation_index=current_swing.index
                     ))
 
-                    current_bias = Bias.BULLISH
-
-            # Check for bearish MSS (break below previous swing low)
+            # Bearish MSS: swing high confirmed after a swing low ->
+            # look forward from the high for a close back below that low
             elif current_swing.is_high and not previous_swing.is_high:
-                break_candles = df[
-                    (df.index > previous_swing.timestamp) &
-                    (df.index <= current_swing.timestamp) &
-                    (df['Close'] < previous_swing.price)
-                ]
+                window = df[df.index > current_swing.timestamp]
+                break_candles = window[window['Close'] < previous_swing.price]
 
                 if not break_candles.empty:
                     break_index = break_candles.index[0]
@@ -342,8 +348,6 @@ class StructureDetector:
                         internal=internal,
                         confirmation_index=current_swing.index
                     ))
-
-                    current_bias = Bias.BEARISH
 
         return events
 
