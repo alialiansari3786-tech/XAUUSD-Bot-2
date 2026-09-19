@@ -16,6 +16,7 @@ from config.settings import settings
 from src.utils.logger import setup_logger
 from src.utils.timeframe_utils import TIMEFRAME_MINUTES, resample_to_timeframe
 from src.utils.monthly_data_cache import load_cached_monthly_data, save_monthly_data_cache
+from src.core.saxo_client import SaxoClient, SaxoAuthError
 
 
 logger = setup_logger(__name__, settings.LOG_LEVEL)
@@ -43,15 +44,25 @@ class DataFetcher:
         self._basis_cache: Optional[float] = None
         self._basis_cache_time: Optional[datetime] = None
 
-        # Initialize Twelve Data client - now the PRIMARY source (genuine
-        # spot XAUUSD pricing with minimal delay), with yfinance GC=F as
-        # a fallback if Twelve Data fails (delayed futures data, needs
-        # the spot-basis correction below).
+        # Saxo OpenAPI - now the PRIMARY data source (genuine live spot
+        # XAUUSD, minimal delay). Twelve Data is secondary, yfinance is
+        # tertiary. Tracks which source served each timeframe this
+        # cycle so main.py can alert on fallback transitions.
+        self.saxo_client = None
+        if settings.SAXO_APP_KEY and settings.SAXO_APP_SECRET:
+            self.saxo_client = SaxoClient()
+            logger.info("Saxo client initialized as primary data source")
+        self.sources_used_this_cycle: List[str] = []
+
+        # Initialize Twelve Data client - now the SECONDARY source, used
+        # if Saxo fails. yfinance GC=F is the tertiary/last-resort
+        # fallback (delayed futures, needs the spot-basis correction
+        # below).
         self.twelve_data_client = None
         if settings.TWELVE_DATA_API_KEY:
             try:
                 self.twelve_data_client = TDClient(apikey=settings.TWELVE_DATA_API_KEY)
-                logger.info("Twelve Data client initialized as primary data source")
+                logger.info("Twelve Data client initialized as secondary data source")
             except Exception as e:
                 logger.warning(f"Failed to initialize Twelve Data: {e}")
 
@@ -119,35 +130,75 @@ class DataFetcher:
                 self.data_cache[cache_key] = cached_monthly
                 return cached_monthly
 
-        # Try Twelve Data first (primary source)
+        # Try Saxo first (primary source)
+        if self.saxo_client:
+            try:
+                count = self._get_twelvedata_outputsize(timeframe)  # same target windows across all sources
+                data = self.saxo_client.fetch_chart(timeframe, count=count)
+                if data is not None and not data.empty:
+                    logger.info(f"✓ Saxo: {len(data)} candles for {timeframe}")
+                    self.data_cache[cache_key] = data
+                    self.sources_used_this_cycle.append('saxo')
+                    if timeframe == 'MN':
+                        save_monthly_data_cache(data)
+                    return data
+            except SaxoAuthError as e:
+                logger.warning(f"Saxo auth failed for {timeframe}: {e}")
+            except Exception as e:
+                logger.warning(f"Saxo failed for {timeframe}: {e}")
+
+        # Try Twelve Data second (secondary source)
         if self.twelve_data_client:
             try:
                 data = self._fetch_from_twelve_data(timeframe, period)
                 if data is not None and not data.empty:
                     self.data_cache[cache_key] = data
+                    self.sources_used_this_cycle.append('twelve_data')
                     if timeframe == 'MN':
                         save_monthly_data_cache(data)
                     return data
             except Exception as e:
                 logger.warning(f"Twelve Data failed for {timeframe}: {e}")
 
-        # Fallback to yfinance (GC=F futures - delayed, needs spot-basis
-        # correction). Logged clearly since falling back here means
-        # you're temporarily back on delayed data.
-        logger.warning(f"Falling back to yfinance (GC=F futures, delayed) for {timeframe}")
+        # Fallback to yfinance (tertiary - GC=F futures, delayed, needs
+        # spot-basis correction). Logged clearly since reaching this
+        # point means BOTH Saxo and Twelve Data have failed.
+        logger.warning(f"Both Saxo and Twelve Data failed - falling back to yfinance (GC=F, delayed) for {timeframe}")
         try:
             data = self._fetch_from_yfinance(timeframe, period)
             if data is not None and not data.empty:
                 data = self._apply_spot_basis(data)
                 self.data_cache[cache_key] = data
+                self.sources_used_this_cycle.append('yfinance')
                 if timeframe == 'MN':
                     save_monthly_data_cache(data)
                 return data
         except Exception as e:
             logger.warning(f"yfinance also failed for {timeframe}: {e}")
 
-        logger.error(f"All data sources failed for {timeframe}")
+        logger.error(f"All three data sources (Saxo, Twelve Data, yfinance) failed for {timeframe}")
         return None
+
+    def get_worst_source_this_cycle(self) -> str:
+        """
+        The lowest-priority source actually used across all timeframes
+        fetched so far this cycle - 'saxo' if everything used Saxo,
+        else 'twelve_data' if anything fell back that far, else
+        'yfinance' if anything fell all the way back. Used by main.py
+        to decide whether a fallback alert is warranted. Call
+        reset_cycle_sources() at the start of each scan cycle.
+        """
+        if 'yfinance' in self.sources_used_this_cycle:
+            return 'yfinance'
+        if 'twelve_data' in self.sources_used_this_cycle:
+            return 'twelve_data'
+        if self.sources_used_this_cycle:
+            return 'saxo'
+        return 'unknown'
+
+    def reset_cycle_sources(self) -> None:
+        """Call at the start of each scan cycle before fetching any timeframes."""
+        self.sources_used_this_cycle = []
 
     def _fetch_from_yfinance(
         self,
