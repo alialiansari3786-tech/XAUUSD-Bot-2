@@ -5,7 +5,7 @@ Fetches XAUUSD market data with multiple source redundancy
 
 import yfinance as yf
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List
 from pathlib import Path
 import pickle
@@ -15,6 +15,7 @@ from twelvedata import TDClient
 from config.settings import settings
 from src.utils.logger import setup_logger
 from src.utils.timeframe_utils import TIMEFRAME_MINUTES, resample_to_timeframe
+from src.utils.monthly_data_cache import load_cached_monthly_data, save_monthly_data_cache
 
 
 logger = setup_logger(__name__, settings.LOG_LEVEL)
@@ -42,12 +43,15 @@ class DataFetcher:
         self._basis_cache: Optional[float] = None
         self._basis_cache_time: Optional[datetime] = None
 
-        # Initialize Twelve Data client
+        # Initialize Twelve Data client - now the PRIMARY source (genuine
+        # spot XAUUSD pricing with minimal delay), with yfinance GC=F as
+        # a fallback if Twelve Data fails (delayed futures data, needs
+        # the spot-basis correction below).
         self.twelve_data_client = None
-        if settings.TWELVE_DATA_API_KEY and settings.ENABLE_TWELVE_DATA_FALLBACK:
+        if settings.TWELVE_DATA_API_KEY:
             try:
                 self.twelve_data_client = TDClient(apikey=settings.TWELVE_DATA_API_KEY)
-                logger.info("Twelve Data client initialized as fallback")
+                logger.info("Twelve Data client initialized as primary data source")
             except Exception as e:
                 logger.warning(f"Failed to initialize Twelve Data: {e}")
 
@@ -64,35 +68,35 @@ class DataFetcher:
 
         Priority order:
         1. CSV data (if use_csv=True)
-        2. yfinance
-        3. Twelve Data (fallback)
+        2. Monthly cache (MN timeframe only - fetched once per calendar month)
+        3. Twelve Data (primary - genuine spot XAUUSD, minimal delay)
+        4. yfinance GC=F (fallback - delayed futures, spot-basis corrected)
 
         Args:
-            timeframe: Timeframe code (M1, M5, M15, M30, H1, H4, D1, W1)
-            period: yfinance period (e.g., '1d', '5d', '1mo', '3mo', '1y', 'max')
+            timeframe: Timeframe code (M1, M5, M15, M30, H1, H4, D1, W1, MN)
+            period: yfinance period, used only if the yfinance fallback
+                is reached (e.g., '1mo', '6mo', '1y', 'max')
             force_refresh: Force refresh from API even if cached
 
         Returns:
             DataFrame with OHLCV data or None if error
         """
 
-        # Check cache first
+        # Check in-memory cache first (per-run, shared across methods)
         cache_key = f"{timeframe}_{period}"
         if not force_refresh and cache_key in self.data_cache:
             cached_data = self.data_cache[cache_key]
             if not cached_data.empty:
                 last_timestamp = cached_data.index[-1]
 
-                # Handle timezone-aware timestamps from yfinance
+                # Handle timezone-aware timestamps
                 now = datetime.now()
                 if hasattr(last_timestamp, 'tz') and last_timestamp.tz is not None:
-                    # Convert timezone-aware to UTC then to naive for comparison
                     import pytz
                     last_timestamp_utc = last_timestamp.astimezone(pytz.UTC)
                     now_utc = pytz.UTC.localize(now)
                     age_minutes = (now_utc - last_timestamp_utc).total_seconds() / 60
                 else:
-                    # Both naive
                     age_minutes = (now - last_timestamp).total_seconds() / 60
 
                 if age_minutes < settings.SCAN_INTERVAL_MINUTES:
@@ -103,19 +107,46 @@ class DataFetcher:
         if self.use_csv:
             return self._fetch_from_csv(timeframe)
 
-        # Try yfinance first (with timeout to prevent hanging)
+        # Monthly timeframe: only fetch once per calendar month across
+        # ALL runs (persisted to disk, not just this process's memory),
+        # since re-fetching the full Monthly history every 15-minute
+        # cycle would burn through Twelve Data's rate limit for data
+        # that essentially never changes within a month.
+        if timeframe == 'MN' and not force_refresh:
+            cached_monthly = load_cached_monthly_data()
+            if cached_monthly is not None:
+                logger.debug(f"Using this month's cached Monthly data ({len(cached_monthly)} candles) - not re-fetching")
+                self.data_cache[cache_key] = cached_monthly
+                return cached_monthly
+
+        # Try Twelve Data first (primary source)
+        if self.twelve_data_client:
+            try:
+                data = self._fetch_from_twelve_data(timeframe, period)
+                if data is not None and not data.empty:
+                    self.data_cache[cache_key] = data
+                    if timeframe == 'MN':
+                        save_monthly_data_cache(data)
+                    return data
+            except Exception as e:
+                logger.warning(f"Twelve Data failed for {timeframe}: {e}")
+
+        # Fallback to yfinance (GC=F futures - delayed, needs spot-basis
+        # correction). Logged clearly since falling back here means
+        # you're temporarily back on delayed data.
+        logger.warning(f"Falling back to yfinance (GC=F futures, delayed) for {timeframe}")
         try:
             data = self._fetch_from_yfinance(timeframe, period)
             if data is not None and not data.empty:
                 data = self._apply_spot_basis(data)
                 self.data_cache[cache_key] = data
+                if timeframe == 'MN':
+                    save_monthly_data_cache(data)
                 return data
         except Exception as e:
-            logger.warning(f"yfinance failed for {timeframe}: {e}")
+            logger.warning(f"yfinance also failed for {timeframe}: {e}")
 
-        # Skip Twelve Data fallback for now - it's causing timeouts
-        # TODO: Re-enable after fixing timeout issues
-        logger.error(f"yfinance failed for {timeframe} - skipping Twelve Data fallback to prevent timeout")
+        logger.error(f"All data sources failed for {timeframe}")
         return None
 
     def _fetch_from_yfinance(
@@ -222,12 +253,12 @@ class DataFetcher:
         period: str = None
     ) -> Optional[pd.DataFrame]:
         """
-        Fetch data from Twelve Data API
+        Fetch data from Twelve Data API (primary source)
 
         Free tier limits:
         - 8 API calls/minute
         - 800 API calls/day
-        - Historical data available
+        - 5,000 data points max per request (hard cap, all tiers)
         """
 
         # Map timeframe to Twelve Data interval
@@ -245,14 +276,9 @@ class DataFetcher:
         }
 
         interval = interval_map.get(timeframe, '15min')
-
-        # Calculate outputsize based on period
-        outputsize = self._period_to_outputsize(period, timeframe)
+        outputsize = self._get_twelvedata_outputsize(timeframe)
 
         logger.info(f"Fetching from Twelve Data: {timeframe} (interval={interval}, size={outputsize})")
-
-        # Debug: Log what we're sending to Twelve Data
-        logger.debug(f"Twelve Data params: symbol={settings.TWELVE_DATA_SYMBOL}, interval={interval}, outputsize={outputsize}")
 
         # Validate symbol before making API call
         if not settings.TWELVE_DATA_SYMBOL or settings.TWELVE_DATA_SYMBOL.strip() == '':
@@ -299,6 +325,34 @@ class DataFetcher:
         except Exception as e:
             logger.error(f"Twelve Data fetch error: {e}")
             return None
+
+    def _get_twelvedata_outputsize(self, timeframe: str) -> int:
+        """
+        Candle count to request per timeframe, sized to the confirmed
+        lookback windows below - each comfortably under Twelve Data's
+        hard 5,000-points-per-request cap (verified against real
+        candle counts from this bot's own logs):
+
+            MN  (Monthly): since 2003          -> ~280 candles
+            W1  (Weekly):  5 years              -> ~261 candles
+            D1  (Daily):   3 years               -> ~758 candles
+            H4  (4-hour):  1 year                -> ~1,553 candles
+            H1  (1-hour):  6 months              -> ~2,871 candles
+            M15 (15-min):  30 days               -> ~2,301 candles
+            M5  (5-min):   10 days               -> ~2,296 candles
+
+        Values below include headroom over these estimates.
+        """
+        outputsize_map = {
+            'MN': 300,     # since 2003 (~280 candles) - plenty of margin
+            'W1': 280,     # 5 years
+            'D1': 800,     # 3 years
+            'H4': 1600,    # 1 year
+            'H1': 3000,    # 6 months
+            'M15': 2400,   # 30 days
+            'M5': 2400,    # 10 days
+        }
+        return outputsize_map.get(timeframe, 2400)
 
     def _fetch_from_csv(self, timeframe: str) -> Optional[pd.DataFrame]:
         """
@@ -375,46 +429,32 @@ class DataFetcher:
             logger.error(f"CSV read error: {e}")
             return None
 
-    def _period_to_outputsize(self, period: str, timeframe: str) -> int:
-        """Convert period string to outputsize for Twelve Data"""
-
-        if period is None:
-            period = self._get_default_period(timeframe)
-
-        # Rough conversion
-        period_map = {
-            '1d': 96,    # 1 day at 15min
-            '5d': 480,
-            '7d': 672,
-            '1mo': 2000,
-            '2mo': 4000,
-            '3mo': 5000,
-            '6mo': 5000,
-            '1y': 5000,
-            '2y': 5000,
-            '5y': 5000,
-            'max': 5000
-        }
-
-        return period_map.get(period, 5000)
-
     def _get_default_period(self, timeframe: str) -> str:
-        """Get appropriate default period for timeframe"""
+        """
+        Default yfinance period, used only for the GC=F fallback path
+        when Twelve Data fails. yfinance's period parameter only
+        accepts a fixed set of values (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y,
+        5y, 10y, ytd, max) rather than arbitrary day counts, so these
+        are the closest valid values that cover at least as much
+        history as the primary Twelve Data windows do - it's fine for
+        the (rare) fallback path to fetch a bit more than the primary
+        path requests, just not less.
+        """
 
         period_map = {
-            'M1': '7d',
-            'M3': '7d',
-            'M5': '60d',
-            'M15': '60d',
-            'M30': '60d',
-            'H1': '1y',
-            'H4': '1y',
-            'D1': '2y',
-            'W1': '5y',
-            'MN': '10y'
+            'M1': '5d',
+            'M3': '5d',
+            'M5': '1mo',    # primary: 10 days
+            'M15': '1mo',   # primary: 30 days
+            'M30': '1mo',
+            'H1': '6mo',    # primary: 6 months (exact match)
+            'H4': '1y',     # primary: 1 year (exact match)
+            'D1': '5y',     # primary: 3 years (no '3y' in yfinance's enum)
+            'W1': '5y',     # primary: 5 years (exact match)
+            'MN': 'max'     # primary: since 2003 - 'max' covers all available history
         }
 
-        return period_map.get(timeframe, '60d')
+        return period_map.get(timeframe, '1mo')
 
     def fetch_multiple_timeframes(
         self,
@@ -435,12 +475,35 @@ class DataFetcher:
         logger.info(f"Fetched data for {len(results)}/{len(timeframes)} timeframes")
         return results
 
+    def _log_data_staleness(self, ticker: str, data: pd.DataFrame) -> None:
+        """
+        Log how many minutes old the latest candle is versus current UTC
+        time. This is a diagnostic to empirically compare how delayed
+        GC=F (a regulated futures contract, typically ~10-20 min
+        delayed on free feeds) is against PAXG-USD/XAUT-USD (crypto
+        gold tokens, which aren't subject to the same mandated
+        exchange-data delay) - rather than assuming which is fresher.
+        """
+        if data.empty:
+            return
+        try:
+            last_ts = data.index[-1]
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.tz_localize('UTC')
+            else:
+                last_ts = last_ts.tz_convert('UTC')
+            age_minutes = (datetime.now(timezone.utc) - last_ts.to_pydatetime()).total_seconds() / 60
+            logger.info(f"Data freshness: {ticker} latest candle is {age_minutes:.1f} min old")
+        except Exception as e:
+            logger.debug(f"Could not compute staleness for {ticker}: {e}")
+
     def _fetch_spot_proxy_price(self, ticker: str) -> Optional[float]:
         """Fetch the latest price for a gold-backed token (PAXG-USD / XAUT-USD)"""
         try:
             obj = yf.Ticker(ticker)
             data = obj.history(period='1d', interval='1m')
             if not data.empty:
+                self._log_data_staleness(ticker, data)
                 return float(data['Close'].iloc[-1])
         except Exception as e:
             logger.warning(f"Failed to fetch spot proxy price for {ticker}: {e}")
@@ -498,7 +561,11 @@ class DataFetcher:
         try:
             ticker_obj = yf.Ticker(self.ticker)
             gc_data = ticker_obj.history(period='1d', interval='1m')
-            gc_price = float(gc_data['Close'].iloc[-1]) if not gc_data.empty else None
+            if not gc_data.empty:
+                self._log_data_staleness(self.ticker, gc_data)
+                gc_price = float(gc_data['Close'].iloc[-1])
+            else:
+                gc_price = None
         except Exception as e:
             logger.warning(f"Could not fetch {self.ticker} price for basis calculation: {e}")
             gc_price = None
