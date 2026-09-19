@@ -51,6 +51,18 @@ class Settings:
     ENABLE_SPOT_BASIS_CORRECTION: bool = os.getenv('ENABLE_SPOT_BASIS_CORRECTION', 'true').lower() == 'true'
     SPOT_PROXY_TICKERS: List[str] = ['PAXG-USD', 'XAUT-USD']
 
+    # Saxo OpenAPI (primary data source)
+    # SIM (simulation) environment by default - switch SAXO_AUTH_BASE_URL
+    # and SAXO_API_BASE_URL to the live equivalents once you have a LIVE
+    # account and app. One-time setup: run scripts/saxo_bootstrap.py to
+    # produce the initial refresh token (see src/core/saxo_client.py).
+    SAXO_APP_KEY: str = os.getenv('SAXO_APP_KEY', '')
+    SAXO_APP_SECRET: str = os.getenv('SAXO_APP_SECRET', '')
+    SAXO_AUTH_BASE_URL: str = os.getenv('SAXO_AUTH_BASE_URL', 'https://sim.logonvalidation.net')
+    SAXO_API_BASE_URL: str = os.getenv('SAXO_API_BASE_URL', 'https://gateway.saxobank.com/sim/openapi')
+    SAXO_SYMBOL: str = os.getenv('SAXO_SYMBOL', 'XAUUSD')
+    SAXO_ASSET_TYPE: str = os.getenv('SAXO_ASSET_TYPE', 'FxSpot')
+
     # Twelve Data API (Fallback)
     TWELVE_DATA_API_KEY: str = os.getenv('TWELVE_DATA_API_KEY', '')
     TWELVE_DATA_SYMBOL: str = os.getenv('TWELVE_DATA_SYMBOL', 'XAUUSD')
