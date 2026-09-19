@@ -9,8 +9,13 @@ every use, so as long as the bot refreshes regularly - which it does,
 every single scan cycle - you should not need to run this again unless
 the chain breaks for some reason, e.g. an extended outage).
 
+This script can be run from anywhere (it doesn't assume it's sitting
+inside your cloned repo) - it saves the result next to itself AND
+prints it directly to the terminal, so you can just copy-paste the
+JSON straight into GitHub's web editor if that's easier than using git.
+
 USAGE:
-    python scripts/saxo_bootstrap.py
+    python saxo_bootstrap.py
 
 You'll need:
     - Your Saxo SIM AppKey and AppSecret (from developer.saxo)
@@ -24,9 +29,10 @@ WHAT HAPPENS:
        the page itself won't load (localhost isn't a running server);
        just copy the FULL URL from your browser's address bar.
     4. Paste that URL back into this script when prompted.
-    5. This exchanges the code for a refresh token and saves it to
-       state/saxo_token.json - commit that file to your repo once,
-       manually, and the bot takes over from there.
+    5. This exchanges the code for a refresh token, prints it, and
+       saves it to saxo_token.json next to this script. Either way,
+       that content needs to end up at state/saxo_token.json in your
+       GitHub repo (via git, or by pasting into GitHub's web editor).
 """
 
 import base64
@@ -37,9 +43,9 @@ from urllib.parse import urlencode, urlparse, parse_qs
 
 import requests
 
-BASE_DIR = Path(__file__).parent.parent
-STATE_DIR = BASE_DIR / 'state'
-TOKEN_FILE = STATE_DIR / 'saxo_token.json'
+# Saved next to this script, wherever that happens to be - no
+# assumption about being inside the repo.
+OUTPUT_FILE = Path(__file__).parent / 'saxo_token.json'
 
 
 def main():
@@ -100,7 +106,7 @@ def main():
         timeout=15
     )
 
-    if response.status_code != 200:
+    if response.status_code < 200 or response.status_code >= 300:
         print(f"ERROR: token exchange failed ({response.status_code}): {response.text}")
         sys.exit(1)
 
@@ -111,21 +117,33 @@ def main():
         print(f"ERROR: no refresh_token in response: {payload}")
         sys.exit(1)
 
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(TOKEN_FILE, 'w') as f:
-        json.dump({'refresh_token': refresh_token}, f, indent=2)
+    token_json = json.dumps({'refresh_token': refresh_token}, indent=2)
+
+    with open(OUTPUT_FILE, 'w') as f:
+        f.write(token_json)
 
     print()
     print("=" * 60)
-    print(f"SUCCESS. Refresh token saved to: {TOKEN_FILE}")
+    print("SUCCESS")
     print("=" * 60)
     print()
-    print("Next steps:")
-    print(f"  1. git add {TOKEN_FILE.relative_to(BASE_DIR)}")
-    print(f"  2. git commit -m 'Bootstrap Saxo OAuth token'")
-    print(f"  3. git push")
+    print(f"Saved to: {OUTPUT_FILE}")
     print()
-    print("The bot will take it from here - it refreshes this token")
+    print("This exact content needs to end up in your GitHub repo at")
+    print("state/saxo_token.json. Copy everything between the lines below:")
+    print()
+    print("-" * 60)
+    print(token_json)
+    print("-" * 60)
+    print()
+    print("Easiest path if you don't have git set up locally:")
+    print("  1. Go to your repo on GitHub -> state folder (create it if it")
+    print("     doesn't exist) -> Add file -> Create new file")
+    print("  2. Name it: saxo_token.json")
+    print("  3. Paste the JSON shown above")
+    print("  4. Commit directly to the main branch")
+    print()
+    print("The bot takes it from there - it refreshes this token")
     print("automatically every cycle and commits the rotated token back")
     print("to the repo. You shouldn't need to run this script again unless")
     print("you see a Telegram alert saying Saxo auth needs re-bootstrapping.")
@@ -133,3 +151,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
