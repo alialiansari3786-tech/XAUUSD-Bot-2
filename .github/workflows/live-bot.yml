@@ -32,14 +32,13 @@ jobs:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        SAXO_APP_KEY: ${{ secrets.SAXO_APP_KEY }}
+        SAXO_APP_SECRET: ${{ secrets.SAXO_APP_SECRET }}
         PYTHONPATH: ${{ github.workspace }}
-        # TEMPORARY: shows *why* each method returns no signal (which
-        # gate failed, or how close the confluence score got e.g.
-        # "5/7"), instead of just "No signals found". The code already
-        # logs this detail, it's just filtered out at the default
-        # INFO level. Set back to "INFO" (or remove this line) once
-        # you've seen enough runs to judge whether 0 signals is
-        # expected market behavior or a logic issue.
+        # Shows *why* each method returns no signal (which gate failed,
+        # or how close the confluence score got, e.g. "5/7") instead of
+        # just "No signals found". Set back to "INFO" once you've seen
+        # enough runs to stop needing this level of detail.
         LOG_LEVEL: "DEBUG"
       timeout-minutes: 5
       run: |
