@@ -21,6 +21,7 @@ from src.integrations.chart_generator import ChartGenerator
 from src.utils.logger import setup_logger
 from src.utils.signal_state import is_duplicate, record_sent
 from src.utils.daily_heartbeat import should_send_heartbeat, record_heartbeat_sent
+from src.utils.data_source_alerts import check_for_alert
 
 
 logger = setup_logger(
@@ -167,6 +168,11 @@ class TradingBot:
             logger.info(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             logger.info(f"Market Status: {market_status}")
 
+            # Reset data-source tracking for this cycle (see
+            # get_worst_source_this_cycle below) - Saxo is primary,
+            # Twelve Data secondary, yfinance tertiary.
+            self.data_fetcher.reset_cycle_sources()
+
             # Get current price
             current_price = self.data_fetcher.get_latest_price()
             if current_price:
@@ -223,6 +229,23 @@ class TradingBot:
 
             logger.info("Analysis cycle completed")
             logger.info("=" * 50)
+
+            # Check whether the data source we ended up relying on this
+            # cycle changed from last cycle (Saxo <-> Twelve Data <->
+            # yfinance) - alerts only on the transition, not every
+            # cycle, so an ongoing outage doesn't spam Telegram.
+            worst_source = self.data_fetcher.get_worst_source_this_cycle()
+            alert = check_for_alert(worst_source)
+            if alert:
+                severity, message = alert
+                try:
+                    if severity == 'critical':
+                        self.telegram.send_error_alert_sync(message)
+                    else:
+                        self.telegram.send_status_update_sync(message)
+                    logger.info(f"Data source alert sent ({severity}): {worst_source}")
+                except Exception as e:
+                    logger.warning(f"Failed to send data source alert: {e}")
 
         except Exception as e:
             logger.error(f"Error in analysis cycle: {e}")
