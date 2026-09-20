@@ -67,6 +67,29 @@ class CombinedMethod:
         self.fvg_detector = FVGDetector()
         self.confluence_scorer = ConfluenceScorer()
 
+    def get_current_bias(self, data: Dict[str, pd.DataFrame]) -> Optional[Bias]:
+        """
+        The directional bias Combined Method is currently working from -
+        the same aligned-OB-group bias _find_entry() would use, without
+        running the full (expensive) entry search. Used by
+        bias_scheduler.py to derive Method 3's shared 1H bias without
+        duplicating this method's OB-alignment logic.
+
+        Returns None if no OB alignment currently exists (no bias to report).
+        """
+        daily_stl_sth = self.structure_detector.track_stl_sth(data['D1'], 'D1')
+        ob_zones = self._identify_ob_zones(data, daily_stl_sth)
+
+        if not ob_zones:
+            return None
+
+        aligned_obs = self._check_ob_alignment(ob_zones)
+
+        if not aligned_obs:
+            return None
+
+        return aligned_obs[0]['bias']
+
     def analyze(self) -> Optional[CombinedSignal]:
         """
         Run Combined Method analysis

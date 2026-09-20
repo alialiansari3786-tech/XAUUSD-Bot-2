@@ -1,6 +1,40 @@
 """
-Liquidity SAR Method (Method 3)
-Liquidity-driven entries with SAR strategy integration
+Liquidity SAR Method (Method 3) - MSNR Edition
+Rebuilt around Malaysian SNR (MSNR) confluence instead of the old
+generic SAR-rejection / W-M pattern system.
+
+TIMEFRAMES: 4H and 1H are used ONLY to find Key Levels (MSNR levels:
+A&V/OCL, QM, and their flipped SBR/RBS states). 15M and 5M are used
+ONLY for entry timing (MSS + confluence + Fibo2/POI).
+
+BIAS: this method does not compute its own bias. It uses the shared
+bias from bias_scheduler.py - the agreement between Combined Method's
+and Percentage Method's current 1H bias, recalculated only at 01:00
+and 17:45 New York time and held constant between those checkpoints.
+If the two methods disagree, or bias_scheduler returns None, this
+method does not trade that checkpoint window.
+
+CONFLUENCE - exactly two valid patterns, both requiring an MSS first:
+  Pattern A: MSS -> Key Level -> Fibo2 zone hit -> entry
+  Pattern B: MSS -> Key Level -> POI (FVG/OB/iFVG) hit -> entry
+"Key Level" = a fresh MSNR level (A&V, OCL, QM, or a freshly-flipped
+SBR/RBS) sitting between the MSS break point and the current
+retracement, confirming the setup has real structural backing before
+either the Fibo2 zone or POI zone is used for the actual entry price.
+
+FIBO2 ZONE: measured from the swing extreme before the MSS's
+impulsive move ("0") to the extreme the impulsive move reached ("1").
+Two independent tiers:
+  - Shallow: entry at 0.145, SL fallback at 0.109
+  - Deep:    entry at 0.25,  SL fallback at 0.214
+Either tier qualifies as confluence independently.
+
+STOP LOSS: beyond the swing extreme that produced the MSS, UNLESS that
+distance exceeds 50 pips, in which case the relevant Fibo2 tier's
+outer boundary (0.109 or 0.214) is used instead for a tighter stop.
+
+TAKE PROFIT: opposite-side liquidity, or an MSNR level on 1H/4H if no
+liquidity target is found, else a 3:1 reward-to-risk fallback.
 """
 
 import pandas as pd
@@ -12,506 +46,386 @@ from src.core.data_fetcher import DataFetcher
 from src.core.structure_detector import StructureDetector, Bias, StructureType
 from src.core.order_block_detector import OrderBlockDetector
 from src.core.fvg_detector import FVGDetector
-from src.core.liquidity_detector import LiquidityDetector, LiquidityType
-from src.core.sar_detector import SARDetector
-from src.core.pattern_detector import PatternDetector, PatternType
-from src.utils.confluence_scorer import ConfluenceScorer, ConfluenceFactors
+from src.core.liquidity_detector import LiquidityDetector
+from src.core.msnr_detector import MSNRDetector, MSNRLevel
+from src.core.bias_scheduler import get_shared_bias
 from src.utils.logger import setup_logger
 from config.settings import settings
 
 
 logger = setup_logger(__name__, settings.LOG_LEVEL)
 
+# XAUUSD pip convention: 1 pip = $0.10. Adjust if your broker/feed uses
+# a different convention (e.g., $0.01).
+PIP_SIZE = 0.10
+MAX_SWING_SL_PIPS = 50
+
+FIBO2_SHALLOW_ENTRY = 0.145
+FIBO2_SHALLOW_SL = 0.109
+FIBO2_DEEP_ENTRY = 0.25
+FIBO2_DEEP_SL = 0.214
+
 
 @dataclass
-class LiquiditySARSignal:
-    """Trade signal from Liquidity SAR Method"""
+class MSNRSignal:
+    """Trade signal from Method 3 (MSNR Edition)"""
     timestamp: pd.Timestamp
     method: str = "Liquidity SAR Method"
 
-    # Entry details
     entry_price: float = 0.0
     entry_timeframe: str = "M15"
     stop_loss: float = 0.0
     take_profit: float = 0.0
     bias: Bias = Bias.NEUTRAL
 
-    # Liquidity context
-    liquidity_swept: List[str] = None
-    liquidity_type: str = ""  # "grab" or "sweep"
-    target_liquidity: Optional[float] = None
-
-    # SAR levels
-    fresh_sar_level: Optional[float] = None
-    sar_rejection: bool = False
-    sar_breakout: bool = False
-
-    # Trade zone
-    trade_zone_type: str = ""  # "OB", "FVG", "OB+FVG", "OB+FVG+SAR"
-    blue_zone: Optional[Tuple[float, float]] = None
-
-    # Pattern
-    pattern_type: Optional[PatternType] = None
-    pattern_strength: str = ""
-
-    # Entry model
-    entry_model: str = ""  # "MSS", "CISD", "Unicorn", "Turtle Soup", "SCOB"
-
-    # Confluence
-    confluence_score: int = 0
-    confluence_details: List[str] = None
-
-    # Multi-entry potential
-    can_multi_entry: bool = False
+    key_level_source: str = ""      # 'A&V', 'OCL', 'QM'
+    confluence_pattern: str = ""    # 'MSS+KeyLevel+Fibo2' or 'MSS+KeyLevel+POI'
+    poi_type: str = ""              # 'OB', 'FVG', 'iFVG' (Pattern B only)
+    fibo2_tier: str = ""            # 'shallow' or 'deep' (Pattern A only)
 
 
 class LiquiditySARMethod:
     """
-    Method 3: Liquidity + SAR Strategy
-
-    8-layer confirmation system:
-    1. Liquidity sweep detection
-    2. Trade zone identification (OB/FVG)
-    3. SAR rejection
-    4. SAR breakout
-    5. Pullback to blue zone
-    6. Entry signal (MSS/CISD/etc)
-    7. W/M pattern confirmation
-    8. Fresh level entry
+    Method 3: MSNR-based confluence system.
+    4H/1H for Key Levels, 15M/5M for MSS + entry.
     """
 
-    def __init__(self, data_fetcher: DataFetcher):
-        """Initialize Liquidity SAR Method"""
+    def __init__(self, data_fetcher: DataFetcher, combined_method=None, percentage_method=None):
         self.data_fetcher = data_fetcher
         self.structure_detector = StructureDetector()
         self.ob_detector = OrderBlockDetector()
         self.fvg_detector = FVGDetector()
         self.liquidity_detector = LiquidityDetector()
-        self.sar_detector = SARDetector()
-        self.pattern_detector = PatternDetector()
-        self.confluence_scorer = ConfluenceScorer()
+        self.msnr_detector = MSNRDetector()
 
-    def analyze(self) -> Optional[LiquiditySARSignal]:
-        """
-        Run Liquidity SAR Method analysis
+        # Needed only for get_current_bias() - see bias_scheduler.py.
+        # Passed in so this method doesn't duplicate their analysis.
+        if combined_method is None:
+            from src.methods.combined_method import CombinedMethod
+            combined_method = CombinedMethod(data_fetcher)
+        if percentage_method is None:
+            from src.methods.percentage_method import PercentageMethod
+            percentage_method = PercentageMethod(data_fetcher)
+        self.combined_method = combined_method
+        self.percentage_method = percentage_method
 
-        Returns:
-            Trade signal if found, None otherwise
-        """
+    def analyze(self) -> Optional[MSNRSignal]:
+        logger.info("Running Liquidity SAR Method (MSNR) analysis")
 
-        logger.info("Running Liquidity SAR Method analysis")
-
-        # Fetch required data
-        timeframes = ['D1', 'H4', 'H1', 'M30', 'M15', 'M5']
+        timeframes = ['H4', 'H1', 'M15', 'M5']
         data = self.data_fetcher.fetch_multiple_timeframes(timeframes)
 
-        required = ['H1', 'M15']
-        if not all(tf in data for tf in required):
-            missing = [tf for tf in required if tf not in data]
-            logger.warning(f"Missing required timeframe data: {missing}")
+        if not all(tf in data for tf in ['H1', 'M15']):
+            logger.warning("Missing required H1/M15 data")
             return None
-
-        # Log if optional timeframes are missing
         if 'H4' not in data:
-            logger.info("H4 data unavailable - continuing without it")
-        if 'M30' not in data:
-            logger.info("M30 data unavailable - continuing without it")
+            logger.info("H4 data unavailable - continuing with H1-only Key Levels")
+        if 'M5' not in data:
+            logger.info("M5 data unavailable - continuing with M15-only entry")
 
-        current_price = data['M15']['Close'].iloc[-1]
-
-        # Step 1: Detect all liquidity levels
-        all_liquidity = self.liquidity_detector.detect_all_liquidity(data, current_price)
-
-        # Step 2: Identify liquidity sweeps
-        sweeps = self.liquidity_detector.identify_liquidity_sweep(
-            data['M15'],
-            all_liquidity,
-            lookback=10
-        )
-
-        if not sweeps:
-            logger.debug("No liquidity sweeps detected")
+        # Shared bias (no self-computed bias) - held constant between
+        # 01:00/17:45 NY checkpoints, see bias_scheduler.py
+        bias = get_shared_bias(self.combined_method, self.percentage_method, data)
+        if bias is None:
+            logger.debug("No agreed shared bias (Combined/Percentage disagree or unavailable) - no trade")
             return None
 
-        logger.debug(f"Validating {len(sweeps)} liquidity sweep(s)")
+        # Key Levels from 4H + H1
+        key_levels = self._get_key_levels(data, bias)
+        if not key_levels:
+            logger.debug(f"No fresh Key Levels found on H4/H1 for bias {bias.value}")
+            return None
 
-        # Step 3: For each sweep, check full validation chain
-        #
-        # _identify_trade_zones() runs OB + FVG + SAR detection across
-        # 4 timeframes and only depends on `bias`, not on the specific
-        # sweep event. The original code called it fresh inside this
-        # loop for every sweep, so with dozens/hundreds of sweeps the
-        # same expensive multi-timeframe scan was repeated that many
-        # times - this (combined with the EQH/EQL explosion fixed in
-        # LiquidityDetector) is what caused the multi-minute hang.
-        # Cache the result per bias so it's computed at most twice.
-        zone_cache: Dict[Bias, List[Dict]] = {}
+        # MSS on the entry timeframes (15M preferred, 5M fallback)
+        entry_tf = 'M15'
+        entry_df = data['M15']
+        mss = self._find_recent_mss(entry_df, bias, entry_tf, max_age_bars=15)
 
-        for sweep in sweeps:
-            signal = self._validate_full_chain(
-                sweep,
-                data,
-                all_liquidity,
-                zone_cache
+        if mss is None and 'M5' in data:
+            entry_tf = 'M5'
+            entry_df = data['M5']
+            mss = self._find_recent_mss(entry_df, bias, entry_tf, max_age_bars=15)
+
+        if mss is None:
+            logger.debug("No recent MSS matching shared bias on M15/M5 - no entry")
+            return None
+
+        # A Key Level must sit in the retracement zone between the MSS
+        # break point and current price - this is the structural
+        # backing both confluence patterns require before Fibo2/POI.
+        current_price = entry_df['Close'].iloc[-1]
+        relevant_key_level = self._find_relevant_key_level(key_levels, mss, current_price, bias)
+
+        if relevant_key_level is None:
+            logger.debug("No Key Level found between MSS break point and current price")
+            return None
+
+        # Pattern A: Key Level + Fibo2 zone
+        fibo2 = self._compute_fibo2_zone(entry_df, mss, bias)
+        fibo2_hit = self._check_fibo2_hit(current_price, fibo2, bias)
+
+        if fibo2_hit:
+            return self._build_signal(
+                bias=bias, entry_tf=entry_tf, mss=mss, key_level=relevant_key_level,
+                pattern='MSS+KeyLevel+Fibo2', fibo2=fibo2, fibo2_tier=fibo2_hit,
+                current_price=current_price, data=data
             )
 
-            if signal:
-                return signal
+        # Pattern B: Key Level + POI (OB/FVG/iFVG)
+        poi = self._find_poi(entry_df, entry_tf, bias, current_price)
+        if poi:
+            return self._build_signal(
+                bias=bias, entry_tf=entry_tf, mss=mss, key_level=relevant_key_level,
+                pattern='MSS+KeyLevel+POI', poi=poi, fibo2=fibo2,
+                current_price=current_price, data=data
+            )
+
+        logger.debug("Key Level found, but neither Fibo2 zone nor POI confluence confirmed - no entry")
+        return None
+
+    # ------------------------------------------------------------------
+    # Key Levels (4H/1H)
+    # ------------------------------------------------------------------
+
+    def _get_key_levels(self, data: Dict[str, pd.DataFrame], bias: Bias) -> List[MSNRLevel]:
+        """Fresh A&V/OCL/QM levels (incl. flipped SBR/RBS) from 4H and 1H, matching bias direction."""
+
+        level_type = 'support' if bias == Bias.BULLISH else 'resistance'
+        levels = []
+
+        for tf in ('H4', 'H1'):
+            if tf not in data:
+                continue
+            self.msnr_detector.detect_av_levels(data[tf], tf)
+            self.msnr_detector.detect_qm_levels(data[tf], tf)
+            levels.extend(self.msnr_detector.get_fresh_levels(tf, level_type=level_type))
+
+        return levels
+
+    def _find_relevant_key_level(
+        self,
+        key_levels: List[MSNRLevel],
+        mss,
+        current_price: float,
+        bias: Bias
+    ) -> Optional[MSNRLevel]:
+        """A Key Level sitting between the MSS break level and current price (the retracement zone)."""
+
+        mss_level = mss.broken_level
+
+        for level in key_levels:
+            if bias == Bias.BULLISH:
+                if mss_level <= level.price <= current_price:
+                    return level
+            else:
+                if current_price <= level.price <= mss_level:
+                    return level
 
         return None
 
-    def _validate_full_chain(
+    # ------------------------------------------------------------------
+    # MSS (entry timeframe)
+    # ------------------------------------------------------------------
+
+    def _find_recent_mss(self, df: pd.DataFrame, bias: Bias, timeframe: str, max_age_bars: int):
+        events = self.structure_detector.detect_structure(df, timeframe)
+        matching = [e for e in events if e.type == StructureType.MSS and e.bias == bias]
+
+        if not matching:
+            return None
+
+        last_mss = matching[-1]
+        mss_idx = df.index.get_loc(last_mss.timestamp)
+
+        if len(df) - mss_idx > max_age_bars:
+            return None
+
+        return last_mss
+
+    # ------------------------------------------------------------------
+    # Fibo2 zone
+    # ------------------------------------------------------------------
+
+    def _compute_fibo2_zone(self, df: pd.DataFrame, mss, bias: Bias, lookback: int = 50) -> Dict[str, float]:
+        """
+        '0' = the swing extreme before the MSS's impulsive move,
+        '1' = the extreme that impulsive move reached (the MSS break
+        candle's own price extreme). Two independent retracement
+        tiers measured back from '1' toward '0'.
+        """
+
+        mss_idx = df.index.get_loc(mss.timestamp)
+        start = max(0, mss_idx - lookback)
+        window = df.iloc[start:mss_idx + 1]
+
+        if bias == Bias.BEARISH:
+            zero = window['High'].max()
+            one = window['Low'].min()
+            rng = zero - one
+            return {
+                'entry_shallow': zero - FIBO2_SHALLOW_ENTRY * rng,
+                'sl_shallow': zero - FIBO2_SHALLOW_SL * rng,
+                'entry_deep': zero - FIBO2_DEEP_ENTRY * rng,
+                'sl_deep': zero - FIBO2_DEEP_SL * rng,
+            }
+        else:
+            zero = window['Low'].min()
+            one = window['High'].max()
+            rng = one - zero
+            return {
+                'entry_shallow': zero + FIBO2_SHALLOW_ENTRY * rng,
+                'sl_shallow': zero + FIBO2_SHALLOW_SL * rng,
+                'entry_deep': zero + FIBO2_DEEP_ENTRY * rng,
+                'sl_deep': zero + FIBO2_DEEP_SL * rng,
+            }
+
+    def _check_fibo2_hit(self, current_price: float, fibo2: Dict[str, float], bias: Bias) -> Optional[str]:
+        """
+        Returns 'shallow', 'deep', or None depending which Fibo2 tier
+        current price has reached. entry_shallow (0.145) sits closer to
+        the MSS's originating swing point than entry_deep (0.25), so
+        reaching shallow requires MORE retracement than reaching deep -
+        check the farther threshold (shallow) first so a price that has
+        travelled past both isn't masked by the easier-to-reach one.
+        """
+
+        if bias == Bias.BEARISH:
+            # price retracing UP into the zone
+            if current_price >= fibo2['entry_shallow']:
+                return 'shallow'
+            if current_price >= fibo2['entry_deep']:
+                return 'deep'
+            return None
+        else:
+            # price retracing DOWN into the zone
+            if current_price <= fibo2['entry_shallow']:
+                return 'shallow'
+            if current_price <= fibo2['entry_deep']:
+                return 'deep'
+            return None
+
+    # ------------------------------------------------------------------
+    # POI (OB / FVG / iFVG)
+    # ------------------------------------------------------------------
+
+    def _find_poi(self, df: pd.DataFrame, timeframe: str, bias: Bias, current_price: float) -> Optional[Dict]:
+        """Fresh OB, FVG, or iFVG matching bias, that current price is sitting inside."""
+
+        obs = self.ob_detector.detect_order_blocks(df, timeframe)
+        for ob in obs:
+            if ob.fresh and ob.bias == bias and ob.low <= current_price <= ob.high:
+                return {'type': 'OB', 'bottom': ob.low, 'top': ob.high}
+
+        fvgs = self.fvg_detector.detect_fvgs(df, timeframe)
+        for fvg in fvgs:
+            if fvg.fresh and fvg.bias == bias and fvg.bottom <= current_price <= fvg.top:
+                return {'type': 'FVG', 'bottom': fvg.bottom, 'top': fvg.top}
+
+        # iFVG: a fully-violated FVG's ENTIRE original range flips
+        # polarity - the whole zone becomes a POI in the new direction,
+        # not just whatever fraction was left unfilled.
+        for fvg in fvgs:
+            if not fvg.fresh and fvg.filled_pct >= 100 and fvg.bias != bias:
+                if fvg.bottom <= current_price <= fvg.top:
+                    return {'type': 'iFVG', 'bottom': fvg.bottom, 'top': fvg.top}
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Signal construction
+    # ------------------------------------------------------------------
+
+    def _build_signal(
         self,
-        sweep: Dict,
+        bias: Bias,
+        entry_tf: str,
+        mss,
+        key_level: MSNRLevel,
+        current_price: float,
         data: Dict[str, pd.DataFrame],
-        all_liquidity: List,
-        zone_cache: Optional[Dict[Bias, List[Dict]]] = None
-    ) -> Optional[LiquiditySARSignal]:
-        """
-        Validate complete 8-layer confirmation chain
+        pattern: str,
+        fibo2: Dict[str, float],
+        fibo2_tier: Optional[str] = None,
+        poi: Optional[Dict] = None
+    ) -> MSNRSignal:
 
-        Args:
-            sweep: Liquidity sweep event
-            data: Timeframe data
-            all_liquidity: All liquidity levels
-            zone_cache: Optional dict caching _identify_trade_zones()
-                results by bias, since that scan is bias-only and
-                identical across every sweep of the same bias
+        swing_extreme = mss.broken_level
 
-        Returns:
-            Signal if all layers pass
-        """
-
-        sweep_type = sweep['type']
-        bias = Bias.BULLISH if 'bullish' in sweep_type else Bias.BEARISH
-
-        # Layer 1: Liquidity sweep (already confirmed)
-        liquidity_type = "grab"  # Assume grab for now (stronger than sweep)
-
-        # Layer 2: Identify trade zone (5m, 15m, 30m, max 1H)
-        if zone_cache is not None:
-            if bias not in zone_cache:
-                zone_cache[bias] = self._identify_trade_zones(data, sweep, bias)
-            trade_zones = zone_cache[bias]
+        if pattern == 'MSS+KeyLevel+Fibo2':
+            entry_price = fibo2[f'entry_{fibo2_tier}']
+            fibo2_sl = fibo2[f'sl_{fibo2_tier}']
         else:
-            trade_zones = self._identify_trade_zones(data, sweep, bias)
+            entry_price = poi['top'] if bias == Bias.BEARISH else poi['bottom']
+            # Pattern B has no Fibo2 tier hit; use the deep tier's SL
+            # boundary as the tightening option under the same 50-pip rule.
+            fibo2_sl = fibo2['sl_deep']
 
-        if not trade_zones:
-            return None
+        # Stop loss: beyond the swing extreme, unless that's >50 pips
+        # away, in which case use the tighter Fibo2 boundary.
+        swing_sl_distance_pips = abs(entry_price - swing_extreme) / PIP_SIZE
+        stop_loss = swing_extreme if swing_sl_distance_pips <= MAX_SWING_SL_PIPS else fibo2_sl
 
-        # Layer 3: Check SAR rejection at fresh level
-        sar_levels = self.sar_detector.detect_sar_levels(data['M15'], 'M15')
-        fresh_sar = self.sar_detector.get_fresh_levels('M15',
-            level_type='support' if bias == Bias.BULLISH else 'resistance'
-        )
+        # Take profit: opposite-side liquidity, else an MSNR level on
+        # 1H/4H, else a 3:1 RR fallback (needs entry+SL, computed here).
+        take_profit = self._find_take_profit(data, bias, entry_price, stop_loss)
 
-        sar_rejection = False
-        sar_level_price = None
-
-        for sar_level in fresh_sar:
-            if self.sar_detector.identify_rejection(data['M15'], sar_level):
-                sar_rejection = True
-                sar_level_price = sar_level.price
-                break
-
-        if not sar_rejection:
-            logger.debug("No SAR rejection found")
-            return None
-
-        # Layer 4: Check SAR breakout
-        sar_breakout = False
-        for sar_level in fresh_sar:
-            if self.sar_detector.identify_breakout(data['M15'], sar_level):
-                sar_breakout = True
-                break
-
-        # Layer 5: Check pullback to blue zone (trade zone)
-        current_price = data['M15']['Close'].iloc[-1]
-        best_zone = trade_zones[0]
-
-        in_blue_zone = (
-            best_zone['zone_bottom'] <= current_price <= best_zone['zone_top']
-        )
-
-        if not in_blue_zone:
-            logger.debug("Not in blue zone")
-            return None
-
-        # Layer 6: Check entry signal (MSS preferred, alternatives accepted)
-        entry_model = self._identify_entry_model(data['M15'], bias)
-
-        if not entry_model:
-            logger.debug("No entry model found")
-            return None
-
-        # Layer 7: W/M pattern confirmation
-        if bias == Bias.BULLISH:
-            patterns = self.pattern_detector.detect_w_patterns(data['M15'], 'M15')
-            recent_patterns = [p for p in patterns if p.pattern_type in [PatternType.STRONG_W, PatternType.WEAK_W]]
-        else:
-            patterns = self.pattern_detector.detect_m_patterns(data['M15'], 'M15')
-            recent_patterns = [p for p in patterns if p.pattern_type in [PatternType.STRONG_M, PatternType.WEAK_M]]
-
-        if not recent_patterns:
-            logger.debug("No W/M pattern found")
-            return None
-
-        best_pattern = recent_patterns[-1]
-        pattern_strength_info = self.pattern_detector.calculate_pattern_strength(best_pattern)
-
-        # Layer 8: Fresh level entry (already confirmed with SAR)
-        # All layers passed!
-
-        # Calculate confluence score
-        factors = ConfluenceFactors()
-        factors.liquidity_grab = liquidity_type == "grab"
-        factors.fresh_sr_level = True
-        factors.strong_w_pattern = best_pattern.pattern_type in [PatternType.STRONG_W, PatternType.STRONG_M]
-        factors.multiple_zones_aligned = len(trade_zones) > 1
-
-        # Entry model factors
-        if entry_model == "MSS":
-            factors.mss_present = True
-        elif entry_model == "CISD":
-            factors.cisd_present = True
-        elif entry_model == "Unicorn":
-            factors.unicorn_model = True
-        elif entry_model == "Turtle Soup":
-            factors.turtle_soup = True
-        elif entry_model == "SCOB":
-            factors.scob_present = True
-
-        # Multi-TF OB alignment
-        if best_zone.get('timeframes') and len(best_zone['timeframes']) >= 3:
-            factors.ob_alignment_3tf = True
-        elif best_zone.get('timeframes') and len(best_zone['timeframes']) >= 2:
-            factors.ob_alignment_2tf = True
-
-        confluence_result = self.confluence_scorer.score_liquidity_sar_method(factors)
-
-        if not confluence_result['passed']:
-            logger.debug(f"Confluence failed: {confluence_result['score']}/{confluence_result['min_required']}")
-            return None
-
-        # Build signal
-        # NOTE: timestamp is the swept liquidity level's own timestamp
-        # (the Layer 1 event that triggered this whole validation
-        # chain), not "now" - identifies the setup itself for dedup
-        # purposes (see combined_method.py for the same pattern).
-        signal = LiquiditySARSignal(
-            timestamp=sweep['level'].timestamp,
+        signal = MSNRSignal(
+            timestamp=mss.timestamp,
             bias=bias,
-            entry_price=sar_level_price,
-            entry_timeframe='M15',
-            liquidity_swept=[sweep['level'].level_type.value],
-            liquidity_type=liquidity_type,
-            fresh_sar_level=sar_level_price,
-            sar_rejection=True,
-            sar_breakout=sar_breakout,
-            trade_zone_type=best_zone.get('type', 'OB+FVG+SAR'),
-            blue_zone=(best_zone['zone_bottom'], best_zone['zone_top']),
-            pattern_type=best_pattern.pattern_type,
-            pattern_strength=pattern_strength_info['strength'],
-            entry_model=entry_model,
-            confluence_score=confluence_result['score'],
-            confluence_details=confluence_result['details'],
-            can_multi_entry=True  # Fresh level allows multiple entries
+            entry_price=entry_price,
+            entry_timeframe=entry_tf,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            key_level_source=key_level.source.value,
+            confluence_pattern=pattern,
         )
 
-        # Calculate SL and TP
-        swept_liquidity = sweep['level'].price
-
-        if bias == Bias.BULLISH:
-            signal.stop_loss = swept_liquidity - abs(swept_liquidity * 0.002)  # Below swept liquidity
-
-            # Target opposite liquidity
-            untaken = self.liquidity_detector.get_untaken_liquidity(all_liquidity, bias='bullish')
-            if untaken:
-                # Find closest untaken liquidity above
-                targets_above = [liq for liq in untaken if liq.price > current_price]
-                if targets_above:
-                    signal.take_profit = min(targets_above, key=lambda x: x.price).price
-                    signal.target_liquidity = signal.take_profit
-                else:
-                    # Use 3:1 RR
-                    signal.take_profit = signal.entry_price + (signal.entry_price - signal.stop_loss) * 3
-            else:
-                signal.take_profit = signal.entry_price + (signal.entry_price - signal.stop_loss) * 3
-
-        else:  # Bearish
-            signal.stop_loss = swept_liquidity + abs(swept_liquidity * 0.002)
-
-            untaken = self.liquidity_detector.get_untaken_liquidity(all_liquidity, bias='bearish')
-            if untaken:
-                targets_below = [liq for liq in untaken if liq.price < current_price]
-                if targets_below:
-                    signal.take_profit = max(targets_below, key=lambda x: x.price).price
-                    signal.target_liquidity = signal.take_profit
-                else:
-                    signal.take_profit = signal.entry_price - (signal.stop_loss - signal.entry_price) * 3
-            else:
-                signal.take_profit = signal.entry_price - (signal.stop_loss - signal.entry_price) * 3
+        if pattern == 'MSS+KeyLevel+Fibo2':
+            signal.fibo2_tier = fibo2_tier
+        else:
+            signal.poi_type = poi['type']
 
         return signal
 
-    def _identify_trade_zones(
+    def _find_take_profit(
         self,
         data: Dict[str, pd.DataFrame],
-        sweep: Dict,
-        bias: Bias
-    ) -> List[Dict]:
-        """
-        Identify trade zones (OB + FVG + SAR confluence)
+        bias: Bias,
+        entry_price: float,
+        stop_loss: float
+    ) -> float:
+        """Opposite-side liquidity target, else nearest opposite MSNR level on 1H/4H, else 3:1 RR."""
 
-        Args:
-            data: Timeframe data
-            sweep: Sweep event
-            bias: Trade bias
+        all_liquidity = self.liquidity_detector.detect_all_liquidity(data, entry_price)
+        untaken = self.liquidity_detector.get_untaken_liquidity(
+            all_liquidity, bias='bullish' if bias == Bias.BULLISH else 'bearish'
+        )
 
-        Returns:
-            List of trade zones sorted by strength
-        """
+        if bias == Bias.BULLISH:
+            targets = [lv.price for lv in untaken if lv.price > entry_price]
+            if targets:
+                return min(targets)
+        else:
+            targets = [lv.price for lv in untaken if lv.price < entry_price]
+            if targets:
+                return max(targets)
 
-        zones = []
+        # Fallback: nearest opposite-direction MSNR level on 1H/4H
+        opposite_type = 'resistance' if bias == Bias.BULLISH else 'support'
+        opposite_levels = []
+        for tf in ('H1', 'H4'):
+            opposite_levels.extend(self.msnr_detector.get_fresh_levels(tf, level_type=opposite_type))
 
-        # Check 5m, 15m, 30m, 1H
-        for tf in ['M5', 'M15', 'M30', 'H1']:
-            if tf not in data:
-                continue
+        if opposite_levels:
+            if bias == Bias.BULLISH:
+                candidates = [lv.price for lv in opposite_levels if lv.price > entry_price]
+                if candidates:
+                    return min(candidates)
+            else:
+                candidates = [lv.price for lv in opposite_levels if lv.price < entry_price]
+                if candidates:
+                    return max(candidates)
 
-            # Detect OBs
-            obs = self.ob_detector.detect_order_blocks(data[tf], tf)
-            fresh_obs = [ob for ob in obs if ob.fresh and ob.bias == bias]
-
-            # Detect FVGs
-            fvgs = self.fvg_detector.detect_fvgs(data[tf], tf)
-            fresh_fvgs = [fvg for fvg in fvgs if fvg.fresh and fvg.bias == bias]
-
-            # Detect SAR levels
-            sar_levels = self.sar_detector.detect_sar_levels(data[tf], tf)
-            fresh_sar = self.sar_detector.get_fresh_levels(tf,
-                level_type='support' if bias == Bias.BULLISH else 'resistance'
-            )
-
-            # Find confluence zones
-            for ob in fresh_obs:
-                zone = {
-                    'timeframe': tf,
-                    'zone_bottom': ob.low,
-                    'zone_top': ob.high,
-                    'type': 'OB',
-                    'timeframes': [tf],
-                    'strength': 1
-                }
-
-                # Check for FVG overlap
-                for fvg in fresh_fvgs:
-                    if self._check_overlap((ob.low, ob.high), (fvg.bottom, fvg.top)):
-                        zone['type'] = 'OB+FVG'
-                        zone['strength'] += 1
-                        break
-
-                # Check for SAR overlap
-                for sar in fresh_sar:
-                    if ob.low <= sar.price <= ob.high:
-                        zone['type'] = 'OB+FVG+SAR' if 'FVG' in zone['type'] else 'OB+SAR'
-                        zone['strength'] += 2  # SAR adds more weight
-                        break
-
-                zones.append(zone)
-
-        # Check for multi-TF alignment
-        aligned_zones = self._find_aligned_zones(zones)
-
-        # Sort by strength
-        all_zones = zones + aligned_zones
-        all_zones.sort(key=lambda x: x['strength'], reverse=True)
-
-        return all_zones
-
-    def _check_overlap(
-        self,
-        range1: Tuple[float, float],
-        range2: Tuple[float, float]
-    ) -> bool:
-        """Check if two price ranges overlap"""
-        return max(range1[0], range2[0]) < min(range1[1], range2[1])
-
-    def _find_aligned_zones(self, zones: List[Dict]) -> List[Dict]:
-        """Find zones aligned across multiple timeframes"""
-        aligned = []
-
-        for i, zone1 in enumerate(zones):
-            for zone2 in zones[i+1:]:
-                if self._check_overlap(
-                    (zone1['zone_bottom'], zone1['zone_top']),
-                    (zone2['zone_bottom'], zone2['zone_top'])
-                ):
-                    # Create aligned zone
-                    aligned_zone = {
-                        'timeframe': f"{zone1['timeframe']}+{zone2['timeframe']}",
-                        'zone_bottom': max(zone1['zone_bottom'], zone2['zone_bottom']),
-                        'zone_top': min(zone1['zone_top'], zone2['zone_top']),
-                        'type': 'Multi-TF',
-                        'timeframes': [zone1['timeframe'], zone2['timeframe']],
-                        'strength': zone1['strength'] + zone2['strength'] + 2  # Bonus for alignment
-                    }
-                    aligned.append(aligned_zone)
-
-        return aligned
-
-    def _identify_entry_model(
-        self,
-        df: pd.DataFrame,
-        bias: Bias
-    ) -> Optional[str]:
-        """
-        Identify entry model on current timeframe
-
-        MSS preferred, but accepts alternatives:
-        - CISD (Candle In Strong Displacement)
-        - Unicorn Model
-        - Turtle Soup
-        - SCOB (Single Candle Order Block)
-
-        Args:
-            df: Price dataframe
-            bias: Expected bias
-
-        Returns:
-            Entry model name if found
-        """
-
-        # Check for MSS
-        structure_events = self.structure_detector.detect_structure(df, 'M15')
-        recent_mss = [e for e in structure_events if e.type == StructureType.MSS and e.bias == bias]
-
-        if recent_mss:
-            # Check if recent (last 10 candles)
-            last_mss = recent_mss[-1]
-            mss_idx = df.index.get_loc(last_mss.timestamp)
-            if len(df) - mss_idx <= 10:
-                return "MSS"
-
-        # Check for CISD (strong displacement candle)
-        recent_candles = df.tail(5)
-        avg_range = (recent_candles['High'] - recent_candles['Low']).mean()
-
-        for idx, row in recent_candles.iterrows():
-            candle_range = row['High'] - row['Low']
-            candle_body = abs(row['Close'] - row['Open'])
-
-            # Strong displacement: 2x avg range, body > 80%
-            if candle_range > avg_range * 2 and candle_body > candle_range * 0.8:
-                if (bias == Bias.BULLISH and row['Close'] > row['Open']) or \
-                   (bias == Bias.BEARISH and row['Close'] < row['Open']):
-                    return "CISD"
-
-        # Check for SCOB (single strong candle creating OB)
-        for idx, row in recent_candles.iterrows():
-            if row['High'] - row['Low'] > avg_range * 1.5:
-                return "SCOB"
-
-        # Could implement Unicorn and Turtle Soup patterns here
-        # For now, return None if no model found
-        return None
+        # Last resort: 3:1 RR based on the actual entry/SL distance
+        risk = abs(entry_price - stop_loss)
+        return entry_price + risk * 3 if bias == Bias.BULLISH else entry_price - risk * 3

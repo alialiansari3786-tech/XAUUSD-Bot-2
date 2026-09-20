@@ -66,6 +66,27 @@ class PercentageMethod:
         self.fvg_detector = FVGDetector()
         self.confluence_scorer = ConfluenceScorer()
 
+    def get_current_bias(self, data: Dict[str, pd.DataFrame]) -> Optional[Bias]:
+        """
+        The directional bias Percentage Method is currently working
+        from - Daily bias, but only if H1 actually confirms it (same
+        gate analyze() uses). Used by bias_scheduler.py to derive
+        Method 3's shared 1H bias without duplicating this method's
+        Daily/H1 structure logic.
+
+        Returns None if Daily structure isn't valid, or H1 doesn't
+        confirm it (no bias to report).
+        """
+        daily_valid, daily_info = self._analyze_daily_structure(data['D1'])
+        if not daily_valid:
+            return None
+
+        h1_valid, h1_info = self._analyze_h1_structure(data['H1'], daily_info)
+        if not h1_valid:
+            return None
+
+        return daily_info['bias']
+
     def analyze(self) -> Optional[PercentageSignal]:
         """
         Run Percentage Method analysis
