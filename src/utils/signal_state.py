@@ -1,15 +1,36 @@
 """
 Signal State Store
 Persists the last signal sent per trading method so the bot doesn't
-re-send an alert for the same setup on every 15-minute scan.
+re-send an alert for the same underlying setup on every 15-minute scan.
+
+DEDUP STRATEGY: exact match on the setup's own founding structural
+event, not price or a time window. Both of those were tried first and
+broke down: price matching (comparing entry/SL/TP within a tolerance)
+missed real duplicates because a genuinely unchanged setup can still
+see its entry/SL/TP drift several dollars per cycle - confirmed
+directly from real Telegram alerts where ~15 consecutive "signals" for
+the same method had identical confluence breakdowns and risk:reward
+ratios but drifting prices. A fixed time-window cooldown is better but
+still a blunt proxy - it either lets a duplicate through if the setup
+outlives the window, or suppresses a genuinely new setup that happens
+to form within it.
+
+The actual fix: each method now stamps its signal's `timestamp` field
+with the underlying structural event that founded the setup - the MSS
+timestamp for Combined Method, the driving order block's own
+timestamp for Percentage Method, the swept liquidity level's timestamp
+for Liquidity SAR Method (see each method's signal construction) -
+rather than "now". That timestamp is exactly invariant for as long as
+it's genuinely the same setup, and changes the instant a real new one
+forms. So dedup here is just: same method, same bias, same timestamp
+-> duplicate, no tolerance or window needed.
 
 GitHub Actions runners are stateless: every run starts a brand-new
 checkout with no memory of the previous run. To dedupe alerts across
-runs, the last-sent signal's key fields (bias, entry, stop-loss,
-take-profit) are written to a small JSON file. The workflow commits
-that file back to the repo at the end of each run (see
-.github/workflows/live-bot.yml), and the next run checks it out fresh
-before deciding whether a new signal is actually new.
+runs, the last-sent setup's identity is written to a small JSON file.
+The workflow commits that file back to the repo at the end of each run
+(see .github/workflows/live-bot.yml), and the next run checks it out
+fresh before deciding whether a new signal is actually new.
 """
 
 import json
@@ -21,10 +42,6 @@ from config.settings import settings
 logger = setup_logger(__name__, settings.LOG_LEVEL)
 
 STATE_FILE = settings.BASE_DIR / 'state' / 'last_signals.json'
-
-# How close two signals' prices must be (in price units, e.g. USD for
-# XAUUSD) to be treated as "the same setup" rather than a new signal.
-PRICE_TOLERANCE = 0.50
 
 
 def _load_state() -> Dict[str, Any]:
@@ -44,21 +61,15 @@ def _save_state(state: Dict[str, Any]) -> None:
         json.dump(state, f, indent=2, default=str)
 
 
-def _fingerprint(signal: Any) -> Dict[str, Any]:
-    """The fields that define 'the same setup' for a given signal."""
-    return {
-        'bias': getattr(signal.bias, 'value', str(signal.bias)),
-        'entry_price': round(float(signal.entry_price), 2) if signal.entry_price else None,
-        'stop_loss': round(float(signal.stop_loss), 2) if signal.stop_loss else None,
-        'take_profit': round(float(signal.take_profit), 2) if signal.take_profit else None,
-    }
+def _setup_key(signal: Any) -> str:
+    """String form of the signal's founding-event timestamp, for exact comparison."""
+    return str(signal.timestamp)
 
 
 def is_duplicate(signal: Any) -> bool:
     """
-    Check whether `signal` is effectively the same setup as the last
-    one sent for its method: same bias, and entry/SL/TP all within
-    PRICE_TOLERANCE of the last alert.
+    Check whether an alert for this exact setup (same method, same
+    bias, same founding structural-event timestamp) was already sent.
     """
     state = _load_state()
     last = state.get(signal.method)
@@ -66,24 +77,20 @@ def is_duplicate(signal: Any) -> bool:
     if not last:
         return False
 
-    current = _fingerprint(signal)
+    bias = getattr(signal.bias, 'value', str(signal.bias))
+    if bias != last.get('bias'):
+        return False  # bias flipped - genuinely a different call
 
-    if current['bias'] != last.get('bias'):
-        return False
-
-    for key in ('entry_price', 'stop_loss', 'take_profit'):
-        cur_val = current.get(key)
-        last_val = last.get(key)
-        if cur_val is None or last_val is None:
-            return False
-        if abs(cur_val - last_val) > PRICE_TOLERANCE:
-            return False
-
-    return True
+    return _setup_key(signal) == last.get('setup_key')
 
 
 def record_sent(signal: Any) -> None:
-    """Record `signal` as the most recently sent alert for its method."""
+    """Record this exact setup as alerted for its method."""
     state = _load_state()
-    state[signal.method] = _fingerprint(signal)
+    state[signal.method] = {
+        'bias': getattr(signal.bias, 'value', str(signal.bias)),
+        'setup_key': _setup_key(signal)
+    }
     _save_state(state)
+
+
