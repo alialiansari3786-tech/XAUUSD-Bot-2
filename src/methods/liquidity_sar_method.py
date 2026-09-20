@@ -40,7 +40,7 @@ liquidity target is found, else a 3:1 reward-to-risk fallback.
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from src.core.data_fetcher import DataFetcher
 from src.core.structure_detector import StructureDetector, Bias, StructureType
@@ -82,6 +82,14 @@ class MSNRSignal:
     confluence_pattern: str = ""    # 'MSS+KeyLevel+Fibo2' or 'MSS+KeyLevel+POI'
     poi_type: str = ""              # 'OB', 'FVG', 'iFVG' (Pattern B only)
     fibo2_tier: str = ""            # 'shallow' or 'deep' (Pattern A only)
+
+    # Generic fields the Telegram formatter expects on every method's
+    # signal (see telegram_bot.py's _format_trade_alert) - populated
+    # in _build_signal() rather than via a numeric scorer, since this
+    # method is a fixed 3-layer confluence chain (MSS + Key Level +
+    # Fibo2/POI), not a weighted score.
+    confluence_score: int = 3
+    confluence_details: List[str] = field(default_factory=list)
 
 
 class LiquiditySARMethod:
@@ -382,8 +390,18 @@ class LiquiditySARMethod:
 
         if pattern == 'MSS+KeyLevel+Fibo2':
             signal.fibo2_tier = fibo2_tier
+            signal.confluence_details = [
+                f"MSS confirmed ({bias.value}) at {swing_extreme:.2f}",
+                f"Key Level: {key_level.source.value} at {key_level.price:.2f}",
+                f"Fibo2 {fibo2_tier} tier hit at {entry_price:.2f}",
+            ]
         else:
             signal.poi_type = poi['type']
+            signal.confluence_details = [
+                f"MSS confirmed ({bias.value}) at {swing_extreme:.2f}",
+                f"Key Level: {key_level.source.value} at {key_level.price:.2f}",
+                f"POI: {poi['type']} at {entry_price:.2f}",
+            ]
 
         return signal
 
