@@ -412,37 +412,37 @@ class LiquiditySARMethod:
         entry_price: float,
         stop_loss: float
     ) -> float:
-        """Opposite-side liquidity target, else nearest opposite MSNR level on 1H/4H, else 3:1 RR."""
+        """
+        TP = nearest opposite-direction target from a single combined
+        pool of untaken liquidity levels and MSNR levels on H1/H4 ONLY.
+        M15/M5 are entry/SL timeframes only and are never TP sources.
+        No category priority between liquidity and MSNR - whichever
+        candidate is closest to entry wins. Falls back to a 3:1 RR
+        multiple if the combined pool is empty in that direction.
+        """
+
+        candidates: List[float] = []
 
         all_liquidity = self.liquidity_detector.detect_all_liquidity(data, entry_price)
         untaken = self.liquidity_detector.get_untaken_liquidity(
             all_liquidity, bias='bullish' if bias == Bias.BULLISH else 'bearish'
         )
+        candidates.extend(lv.price for lv in untaken)
+
+        opposite_type = 'resistance' if bias == Bias.BULLISH else 'support'
+        for tf in ('H1', 'H4'):
+            if tf not in data:
+                continue
+            candidates.extend(lv.price for lv in self.msnr_detector.get_fresh_levels(tf, level_type=opposite_type))
 
         if bias == Bias.BULLISH:
-            targets = [lv.price for lv in untaken if lv.price > entry_price]
-            if targets:
-                return min(targets)
+            valid = [p for p in candidates if p > entry_price]
+            if valid:
+                return min(valid)  # nearest above entry
         else:
-            targets = [lv.price for lv in untaken if lv.price < entry_price]
-            if targets:
-                return max(targets)
-
-        # Fallback: nearest opposite-direction MSNR level on 1H/4H
-        opposite_type = 'resistance' if bias == Bias.BULLISH else 'support'
-        opposite_levels = []
-        for tf in ('H1', 'H4'):
-            opposite_levels.extend(self.msnr_detector.get_fresh_levels(tf, level_type=opposite_type))
-
-        if opposite_levels:
-            if bias == Bias.BULLISH:
-                candidates = [lv.price for lv in opposite_levels if lv.price > entry_price]
-                if candidates:
-                    return min(candidates)
-            else:
-                candidates = [lv.price for lv in opposite_levels if lv.price < entry_price]
-                if candidates:
-                    return max(candidates)
+            valid = [p for p in candidates if p < entry_price]
+            if valid:
+                return max(valid)  # nearest below entry
 
         # Last resort: 3:1 RR based on the actual entry/SL distance
         risk = abs(entry_price - stop_loss)
