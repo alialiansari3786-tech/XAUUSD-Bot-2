@@ -49,7 +49,15 @@ class TradingBot:
         self.data_fetcher = DataFetcher()
         self.combined_method = CombinedMethod(self.data_fetcher)
         self.percentage_method = PercentageMethod(self.data_fetcher)
-        self.liquidity_sar_method = LiquiditySARMethod(self.data_fetcher)
+        # Method 3 no longer computes its own bias - it shares Combined
+        # and Percentage Method's instances to read their current 1H
+        # bias via get_current_bias() (see bias_scheduler.py), rather
+        # than duplicating their structure/OB analysis.
+        self.liquidity_sar_method = LiquiditySARMethod(
+            self.data_fetcher,
+            combined_method=self.combined_method,
+            percentage_method=self.percentage_method
+        )
         self.telegram = TelegramNotifier()
         self.chart_generator = ChartGenerator()
 
