@@ -373,11 +373,17 @@ class CombinedMethod:
             return None
 
         # Build signal
+        # NOTE: timestamp is the underlying MSS event's timestamp, not
+        # "now" - this identifies the setup itself (stays constant for
+        # as long as it's genuinely the same structural shift driving
+        # the trade), which is what signal_state.py uses to dedupe
+        # re-alerts on the same setup rather than a price/time-based
+        # heuristic that broke down under normal price drift.
         entry_price = best_group['avg_low'] if bias == Bias.BULLISH else best_group['avg_high']
         current_price = entry_df['Close'].iloc[-1]
 
         signal = CombinedSignal(
-            timestamp=entry_df.index[-1],
+            timestamp=last_mss.timestamp,
             bias=bias,
             entry_price=entry_price,
             entry_timeframe=entry_tf,

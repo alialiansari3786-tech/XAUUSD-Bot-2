@@ -294,8 +294,12 @@ class LiquiditySARMethod:
             return None
 
         # Build signal
+        # NOTE: timestamp is the swept liquidity level's own timestamp
+        # (the Layer 1 event that triggered this whole validation
+        # chain), not "now" - identifies the setup itself for dedup
+        # purposes (see combined_method.py for the same pattern).
         signal = LiquiditySARSignal(
-            timestamp=data['M15'].index[-1],
+            timestamp=sweep['level'].timestamp,
             bias=bias,
             entry_price=sar_level_price,
             entry_timeframe='M15',

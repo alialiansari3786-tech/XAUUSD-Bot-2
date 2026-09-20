@@ -420,8 +420,11 @@ class PercentageMethod:
             return None
 
         # Build signal
+        # NOTE: timestamp is the closest order block's own formation
+        # time, not "now" - identifies the setup itself for dedup
+        # purposes (see combined_method.py for the same pattern).
         signal = PercentageSignal(
-            timestamp=m5_df.index[-1],
+            timestamp=closest_ob.timestamp,
             bias=bias,
             entry_price=(closest_ob.high + closest_ob.low) / 2,
             entry_timeframe='M5',
