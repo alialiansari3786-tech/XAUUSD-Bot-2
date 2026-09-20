@@ -170,12 +170,12 @@ class TelegramNotifier:
             message += f"🎯 *Zone:* {signal.zone_type.title()}\n"
 
         elif signal.method == "Liquidity SAR Method":
-            if signal.liquidity_swept:
-                message += f"💧 *Liquidity:* {', '.join(signal.liquidity_swept)}\n"
-            message += f"🎯 *SAR Level:* `{signal.fresh_sar_level:.2f}`\n"
-            if signal.pattern_type:
-                message += f"📈 *Pattern:* {signal.pattern_type.value} ({signal.pattern_strength})\n"
-            message += f"🔹 *Entry Model:* {signal.entry_model}\n"
+            message += f"🔑 *Key Level:* {signal.key_level_source}\n"
+            message += f"🧩 *Confluence:* {signal.confluence_pattern}\n"
+            if signal.confluence_pattern == "MSS+KeyLevel+Fibo2":
+                message += f"📐 *Fibo2 Tier:* {signal.fibo2_tier.title()}\n"
+            else:
+                message += f"📦 *POI Type:* {signal.poi_type}\n"
 
         # Timestamp
         message += f"\n⏱ {signal.timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
