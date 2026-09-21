@@ -7,8 +7,6 @@
   },
   "Combined Method": {
     "bias": "Bullish",
-    "entry_price": 3731.65,
-    "stop_loss": 3726.4,
-    "take_profit": 4713.98
+    "setup_key": "2026-09-21 04:30:00-04:00"
   }
 }
