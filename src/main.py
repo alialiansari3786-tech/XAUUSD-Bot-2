@@ -15,7 +15,7 @@ from config.settings import settings
 from src.core.data_fetcher import DataFetcher
 from src.methods.combined_method import CombinedMethod
 from src.methods.percentage_method import PercentageMethod
-from src.methods.liquidity_sar_method import LiquiditySARMethod
+from src.methods.liquidity_msnr_method import LiquidityMSNRMethod
 from src.integrations.telegram_bot import TelegramNotifier
 from src.integrations.chart_generator import ChartGenerator
 from src.utils.logger import setup_logger
@@ -53,7 +53,7 @@ class TradingBot:
         # and Percentage Method's instances to read their current 1H
         # bias via get_current_bias() (see bias_scheduler.py), rather
         # than duplicating their structure/OB analysis.
-        self.liquidity_sar_method = LiquiditySARMethod(
+        self.liquidity_msnr_method = LiquidityMSNRMethod(
             self.data_fetcher,
             combined_method=self.combined_method,
             percentage_method=self.percentage_method
@@ -212,15 +212,15 @@ class TradingBot:
                     logger.error(f"Percentage Method error: {e}")
                     logger.debug(traceback.format_exc())
 
-                # Method 3: Liquidity SAR Method
+                # Method 3: Liquidity MSNR Method
                 try:
-                    logger.info("Running Liquidity SAR Method...")
-                    signal = self.liquidity_sar_method.analyze()
+                    logger.info("Running Liquidity MSNR Method...")
+                    signal = self.liquidity_msnr_method.analyze()
                     if signal:
                         signals.append(signal)
-                        logger.info(f"✓ Liquidity SAR Method signal: {signal.bias.value}")
+                        logger.info(f"✓ Liquidity MSNR Method signal: {signal.bias.value}")
                 except Exception as e:
-                    logger.error(f"Liquidity SAR Method error: {e}")
+                    logger.error(f"Liquidity MSNR Method error: {e}")
                     logger.debug(traceback.format_exc())
 
             # Process signals
@@ -435,7 +435,7 @@ def main():
     ║   Three Trading Methods:                    ║
     ║   1. Combined Method (Multi-TF)             ║
     ║   2. Percentage Method (25%/37.5%)          ║
-    ║   3. Liquidity SAR Method (8-Layer)         ║
+    ║   3. Liquidity MSNR Method (MSNR Confluence) ║
     ║                                              ║
     ║   Press Ctrl+C to stop                      ║
     ╚══════════════════════════════════════════════╝
