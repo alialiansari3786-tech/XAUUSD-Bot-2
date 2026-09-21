@@ -19,7 +19,7 @@ The actual fix: each method now stamps its signal's `timestamp` field
 with the underlying structural event that founded the setup - the MSS
 timestamp for Combined Method, the driving order block's own
 timestamp for Percentage Method, the swept liquidity level's timestamp
-for Liquidity SAR Method (see each method's signal construction) -
+for Liquidity MSNR Method (see each method's signal construction) -
 rather than "now". That timestamp is exactly invariant for as long as
 it's genuinely the same setup, and changes the instant a real new one
 forms. So dedup here is just: same method, same bias, same timestamp
