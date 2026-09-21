@@ -169,7 +169,7 @@ class TelegramNotifier:
             message += f"📐 *H1 Pullback:* {signal.h1_pullback_pct:.1f}%\n"
             message += f"🎯 *Zone:* {signal.zone_type.title()}\n"
 
-        elif signal.method == "Liquidity SAR Method":
+        elif signal.method == "Liquidity MSNR Method":
             message += f"🔑 *Key Level:* {signal.key_level_source}\n"
             message += f"🧩 *Confluence:* {signal.confluence_pattern}\n"
             if signal.confluence_pattern == "MSS+KeyLevel+Fibo2":
