@@ -13,6 +13,7 @@ from src.core.structure_detector import StructureDetector, STLSTHLevel, Bias, St
 from src.core.order_block_detector import OrderBlockDetector
 from src.core.fvg_detector import FVGDetector
 from src.utils.confluence_scorer import ConfluenceScorer, ConfluenceFactors
+from src.utils.params import get_param
 from src.utils.logger import setup_logger
 from config.settings import settings
 
@@ -184,12 +185,12 @@ class CombinedMethod:
         # Simple pullback detection: If price moved significantly from weekly high/low
         if last_week['Close'] > last_week['Open']:  # Bullish week
             # Check if pulling back
-            if daily_current < last_week['High'] * 0.985:  # More than 1.5% pullback
+            if daily_current < last_week['High'] * get_param('combined', 'weekly_pullback_bull', 0.985):
                 context['in_pullback'] = True
                 context['target'] = last_week['High']
 
         else:  # Bearish week
-            if daily_current > last_week['Low'] * 1.015:
+            if daily_current > last_week['Low'] * get_param('combined', 'weekly_pullback_bear', 1.015):
                 context['in_pullback'] = True
                 context['target'] = last_week['Low']
 
@@ -348,10 +349,11 @@ class CombinedMethod:
 
         # Check if MSS is recent
         mss_idx = entry_df.index.get_loc(last_mss.timestamp)
-        if len(entry_df) - mss_idx > 15:
+        max_age = get_param('combined', 'mss_max_age_bars', 15)
+        if len(entry_df) - mss_idx > max_age:
             logger.debug(
                 f"Most recent matching MSS is {len(entry_df) - mss_idx} bars old "
-                f"(max 15) on {entry_tf} - too stale, no entry"
+                f"(max {max_age}) on {entry_tf} - too stale, no entry"
             )
             return None
 
@@ -422,8 +424,10 @@ class CombinedMethod:
         )
 
         # Calculate SL and TP
+        sl_mult = get_param('combined', 'sl_buffer_ob_mult', 0.2)
+        fallback_rr = get_param('combined', 'fallback_rr', 2.0)
         if bias == Bias.BULLISH:
-            signal.stop_loss = best_group['avg_low'] - (best_group['avg_high'] - best_group['avg_low']) * 0.2
+            signal.stop_loss = best_group['avg_low'] - (best_group['avg_high'] - best_group['avg_low']) * sl_mult
 
             # TP: HTF target or next resistance
             if weekly_context.get('target'):
@@ -432,16 +436,16 @@ class CombinedMethod:
                 signal.take_profit = stl_sth.sth.price
             else:
                 # Use 2:1 RR
-                signal.take_profit = entry_price + (entry_price - signal.stop_loss) * 2
+                signal.take_profit = entry_price + (entry_price - signal.stop_loss) * fallback_rr
 
         else:  # Bearish
-            signal.stop_loss = best_group['avg_high'] + (best_group['avg_high'] - best_group['avg_low']) * 0.2
+            signal.stop_loss = best_group['avg_high'] + (best_group['avg_high'] - best_group['avg_low']) * sl_mult
 
             if weekly_context.get('target'):
                 signal.take_profit = weekly_context['target']
             elif stl_sth.stl:
                 signal.take_profit = stl_sth.stl.price
             else:
-                signal.take_profit = entry_price - (signal.stop_loss - entry_price) * 2
+                signal.take_profit = entry_price - (signal.stop_loss - entry_price) * fallback_rr
 
         return signal
