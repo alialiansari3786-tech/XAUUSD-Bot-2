@@ -49,6 +49,7 @@ from src.core.fvg_detector import FVGDetector
 from src.core.liquidity_detector import LiquidityDetector
 from src.core.msnr_detector import MSNRDetector, MSNRLevel
 from src.core.bias_scheduler import get_shared_bias
+from src.utils.params import get_param
 from src.utils.logger import setup_logger
 from config.settings import settings
 
@@ -57,13 +58,17 @@ logger = setup_logger(__name__, settings.LOG_LEVEL)
 
 # XAUUSD pip convention: 1 pip = $0.10. Adjust if your broker/feed uses
 # a different convention (e.g., $0.01).
-PIP_SIZE = 0.10
-MAX_SWING_SL_PIPS = 50
+_S = 'liquidity_msnr'
+PIP_SIZE = get_param(_S, 'pip_size', 0.10)
+MAX_SWING_SL_PIPS = get_param(_S, 'max_swing_sl_pips', 50)
+MSS_MAX_AGE = get_param(_S, 'mss_max_age_bars', 15)
+FIBO_LOOKBACK = get_param(_S, 'fibo_lookback', 50)
+FALLBACK_RR = get_param(_S, 'fallback_rr', 3.0)
 
-FIBO2_SHALLOW_ENTRY = 0.145
-FIBO2_SHALLOW_SL = 0.109
-FIBO2_DEEP_ENTRY = 0.25
-FIBO2_DEEP_SL = 0.214
+FIBO2_SHALLOW_ENTRY = get_param(_S, 'fibo2_shallow_entry', 0.145)
+FIBO2_SHALLOW_SL = get_param(_S, 'fibo2_shallow_sl', 0.109)
+FIBO2_DEEP_ENTRY = get_param(_S, 'fibo2_deep_entry', 0.25)
+FIBO2_DEEP_SL = get_param(_S, 'fibo2_deep_sl', 0.214)
 
 
 @dataclass
@@ -147,12 +152,12 @@ class LiquidityMSNRMethod:
         # MSS on the entry timeframes (15M preferred, 5M fallback)
         entry_tf = 'M15'
         entry_df = data['M15']
-        mss = self._find_recent_mss(entry_df, bias, entry_tf, max_age_bars=15)
+        mss = self._find_recent_mss(entry_df, bias, entry_tf, max_age_bars=MSS_MAX_AGE)
 
         if mss is None and 'M5' in data:
             entry_tf = 'M5'
             entry_df = data['M5']
-            mss = self._find_recent_mss(entry_df, bias, entry_tf, max_age_bars=15)
+            mss = self._find_recent_mss(entry_df, bias, entry_tf, max_age_bars=MSS_MAX_AGE)
 
         if mss is None:
             logger.debug("No recent MSS matching shared bias on M15/M5 - no entry")
@@ -254,7 +259,7 @@ class LiquidityMSNRMethod:
     # Fibo2 zone
     # ------------------------------------------------------------------
 
-    def _compute_fibo2_zone(self, df: pd.DataFrame, mss, bias: Bias, lookback: int = 50) -> Dict[str, float]:
+    def _compute_fibo2_zone(self, df: pd.DataFrame, mss, bias: Bias, lookback: int = FIBO_LOOKBACK) -> Dict[str, float]:
         """
         '0' = the swing extreme before the MSS's impulsive move,
         '1' = the extreme that impulsive move reached (the MSS break
@@ -446,4 +451,4 @@ class LiquidityMSNRMethod:
 
         # Last resort: 3:1 RR based on the actual entry/SL distance
         risk = abs(entry_price - stop_loss)
-        return entry_price + risk * 3 if bias == Bias.BULLISH else entry_price - risk * 3
+        return entry_price + risk * FALLBACK_RR if bias == Bias.BULLISH else entry_price - risk * FALLBACK_RR
