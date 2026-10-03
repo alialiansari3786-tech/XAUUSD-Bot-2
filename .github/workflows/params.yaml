@@ -1,0 +1,41 @@
+# Every key is optional: a missing key falls back to the default in code.
+# "range" comments are suggested tuning ranges.
+
+combined:
+  mss_max_age_bars: 15          # range 8-30   (M15/M5 bars)
+  weekly_pullback_bull: 0.985   # range 0.97-0.995 (price < weekly high * x)
+  weekly_pullback_bear: 1.015   # range 1.005-1.03 (price > weekly low * x)
+  sl_buffer_ob_mult: 0.2        # range 0.1-0.5 (x OB height)
+  fallback_rr: 2.0              # range 1.5-3.0
+
+percentage:
+  d1_min_pullback_pct: 25.0     # range 15-40
+  h1_min_pullback_pct: 37.5     # range 25-50
+  h1_zone_entry_fib: 0.375      # range 0.25-0.5 (discount/premium boundary)
+  m5_mss_max_age_bars: 20       # range 10-40
+  sl_buffer_ob_mult: 0.1        # range 0.05-0.3
+  monthly_lookback_candles: 3   # range 2-6
+
+liquidity_msnr:
+  pip_size: 0.10                # XAUUSD: 0.10 or 0.01 depending on broker
+  max_swing_sl_pips: 50         # range 30-100
+  fibo2_shallow_entry: 0.145    # range 0.10-0.20
+  fibo2_shallow_sl: 0.109       # must stay < shallow_entry
+  fibo2_deep_entry: 0.25        # range 0.20-0.35
+  fibo2_deep_sl: 0.214          # must stay < deep_entry
+  mss_max_age_bars: 15          # range 8-30
+  fibo_lookback: 50             # range 30-100
+  fallback_rr: 3.0              # range 2.0-4.0
+
+msnr_detector:
+  qm_swing_lookback: 5          # range 3-8
+  qm_tolerance_pct: 2.0         # range 0.5-3.0
+
+order_block:
+  displacement_avg_window: 14   # range 10-30
+  displacement_range_mult: 1.5  # range 1.2-2.5
+  displacement_body_ratio: 0.7  # range 0.5-0.85
+
+confluence:                     # Method 3 (MSNR) has a fixed chain, no score
+  min_combined: 6               # range 4-9
+  min_percentage: 5             # range 3-8
