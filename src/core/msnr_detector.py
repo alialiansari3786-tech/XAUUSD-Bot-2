@@ -46,10 +46,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from src.core.structure_detector import Bias, SwingPoint
+from src.utils.params import get_param
 from src.utils.logger import setup_logger
 from config.settings import settings
 
 logger = setup_logger(__name__, settings.LOG_LEVEL)
+
+QM_LOOKBACK = get_param('msnr_detector', 'qm_swing_lookback', 5)
+QM_TOL_PCT = get_param('msnr_detector', 'qm_tolerance_pct', 2.0)
 
 
 class MSNRSource(Enum):
@@ -158,7 +162,7 @@ class MSNRDetector:
         self,
         df: pd.DataFrame,
         timeframe: str,
-        lookback: int = 5
+        lookback: int = QM_LOOKBACK
     ) -> List[MSNRLevel]:
         """
         Detect Quasimodo levels: a Left Shoulder -> Head (beyond LS) ->
@@ -177,7 +181,7 @@ class MSNRDetector:
             if head.price > ls.price and rs.price < head.price:
                 # RS should be roughly back near LS level (within a loose band),
                 # confirming the head-and-shoulders shape
-                if abs(rs.price - ls.price) / ls.price * 100 <= 2.0:
+                if abs(rs.price - ls.price) / ls.price * 100 <= QM_TOL_PCT:
                     levels.append(MSNRLevel(
                         timestamp=rs.timestamp,
                         timeframe=timeframe,
@@ -191,7 +195,7 @@ class MSNRDetector:
         for i in range(len(swing_lows) - 2):
             ls, head, rs = swing_lows[i], swing_lows[i + 1], swing_lows[i + 2]
             if head.price < ls.price and rs.price > head.price:
-                if abs(rs.price - ls.price) / ls.price * 100 <= 2.0:
+                if abs(rs.price - ls.price) / ls.price * 100 <= QM_TOL_PCT:
                     levels.append(MSNRLevel(
                         timestamp=rs.timestamp,
                         timeframe=timeframe,
