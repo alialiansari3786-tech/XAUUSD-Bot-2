@@ -11,6 +11,7 @@ from datetime import datetime
 
 from src.utils.logger import setup_logger
 from src.core.structure_detector import Bias, SwingPoint
+from src.utils.params import get_param
 from config.settings import settings
 
 
@@ -250,18 +251,21 @@ class OrderBlockDetector:
         # Calculate average true range
         df = df.copy()
         df['range'] = df['High'] - df['Low']
-        avg_range = df['range'].rolling(window=14).mean()
+        win = get_param('order_block', 'displacement_avg_window', 14)
+        range_mult = get_param('order_block', 'displacement_range_mult', 1.5)
+        body_ratio = get_param('order_block', 'displacement_body_ratio', 0.7)
+        avg_range = df['range'].rolling(window=win).mean()
 
         # Calculate candle body size
         df['body'] = abs(df['Close'] - df['Open'])
 
-        for i in range(14, len(df)):
+        for i in range(win, len(df)):
             candle_range = df['range'].iloc[i]
             candle_body = df['body'].iloc[i]
             avg = avg_range.iloc[i]
 
             # Strong displacement: range > 1.5x average AND body > 70% of range
-            if candle_range > avg * 1.5 and candle_body > candle_range * 0.7:
+            if candle_range > avg * range_mult and candle_body > candle_range * body_ratio:
                 displacement_indices.append(i)
 
         return displacement_indices
