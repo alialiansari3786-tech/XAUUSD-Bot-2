@@ -14,6 +14,7 @@ from src.core.structure_detector import StructureDetector, StructureType, Bias
 from src.core.order_block_detector import OrderBlockDetector
 from src.core.fvg_detector import FVGDetector
 from src.utils.confluence_scorer import ConfluenceScorer, ConfluenceFactors
+from src.utils.params import get_param
 from src.utils.logger import setup_logger
 from config.settings import settings
 
@@ -145,11 +146,12 @@ class PercentageMethod:
             (direction, target_price)
         """
 
-        if monthly_df is None or monthly_df.empty or len(monthly_df) < 3:
+        n = get_param('percentage', 'monthly_lookback_candles', 3)
+        if monthly_df is None or monthly_df.empty or len(monthly_df) < n:
             return "neutral", None
 
-        # Get last 3 monthly candles
-        recent = monthly_df.tail(3)
+        # Get last n monthly candles
+        recent = monthly_df.tail(n)
 
         # Simple trend determination
         if recent['Close'].iloc[-1] > recent['Close'].iloc[0]:
@@ -181,6 +183,7 @@ class PercentageMethod:
             (valid, info_dict)
         """
 
+        min_pb = get_param('percentage', 'd1_min_pullback_pct', 25.0)
         info = {}
 
         # Detect structure
@@ -213,8 +216,8 @@ class PercentageMethod:
             pullback_pct = ((high_after_mss - current_price) / high_after_mss) * 100
 
             # Check 25% requirement
-            if pullback_pct < 25.0:
-                logger.debug(f"D1 bullish pullback {pullback_pct:.1f}% < required 25.0%")
+            if pullback_pct < min_pb:
+                logger.debug(f"D1 bullish pullback {pullback_pct:.1f}% < required {min_pb}%")
                 return False, info
 
             info['high'] = high_after_mss
@@ -233,8 +236,8 @@ class PercentageMethod:
 
             pullback_pct = ((current_price - low_after_mss) / low_after_mss) * 100
 
-            if pullback_pct < 25.0:
-                logger.debug(f"D1 bearish pullback {pullback_pct:.1f}% < required 25.0%")
+            if pullback_pct < min_pb:
+                logger.debug(f"D1 bearish pullback {pullback_pct:.1f}% < required {min_pb}%")
                 return False, info
 
             info['high'] = after_mss['High'].max()
@@ -265,6 +268,8 @@ class PercentageMethod:
             (valid, info_dict)
         """
 
+        min_pb = get_param('percentage', 'h1_min_pullback_pct', 37.5)
+        zone_fib = get_param('percentage', 'h1_zone_entry_fib', 0.375)
         info = {}
 
         # Detect structure
@@ -297,8 +302,8 @@ class PercentageMethod:
             pullback_pct = ((high_after_mss - current_price) / high_after_mss) * 100
 
             # Check 37.5% requirement
-            if pullback_pct < 37.5:
-                logger.debug(f"H1 bullish pullback {pullback_pct:.1f}% < required 37.5%")
+            if pullback_pct < min_pb:
+                logger.debug(f"H1 bullish pullback {pullback_pct:.1f}% < required {min_pb}%")
                 return False, info
 
             info['high'] = high_after_mss
@@ -310,7 +315,7 @@ class PercentageMethod:
             info['zones'] = {
                 '0': info['low'],
                 '0.25': info['low'] + range_size * 0.25,
-                '0.375': info['low'] + range_size * 0.375,
+                '0.375': info['low'] + range_size * zone_fib,
                 '0.5': info['low'] + range_size * 0.5,
                 '1': high_after_mss
             }
@@ -332,8 +337,8 @@ class PercentageMethod:
             current_price = after_mss['Close'].iloc[-1]
             pullback_pct = ((current_price - low_after_mss) / low_after_mss) * 100
 
-            if pullback_pct < 37.5:
-                logger.debug(f"H1 bearish pullback {pullback_pct:.1f}% < required 37.5%")
+            if pullback_pct < min_pb:
+                logger.debug(f"H1 bearish pullback {pullback_pct:.1f}% < required {min_pb}%")
                 return False, info
 
             info['high'] = after_mss['High'].max()
@@ -345,7 +350,7 @@ class PercentageMethod:
             info['zones'] = {
                 '0': info['high'],
                 '0.25': info['high'] - range_size * 0.25,
-                '0.375': info['high'] - range_size * 0.375,
+                '0.375': info['high'] - range_size * zone_fib,
                 '0.5': info['high'] - range_size * 0.5,
                 '1': low_after_mss
             }
@@ -401,8 +406,9 @@ class PercentageMethod:
 
         # Check if MSS is recent (within last 20 candles)
         mss_idx = m5_df.index.get_loc(last_mss.timestamp)
-        if len(m5_df) - mss_idx > 20:
-            logger.debug(f"Most recent matching M5 MSS is {len(m5_df) - mss_idx} bars old (max 20) - too stale")
+        max_age = get_param('percentage', 'm5_mss_max_age_bars', 20)
+        if len(m5_df) - mss_idx > max_age:
+            logger.debug(f"Most recent matching M5 MSS is {len(m5_df) - mss_idx} bars old (max {max_age}) - too stale")
             return None
 
         # Detect OBs
@@ -459,12 +465,13 @@ class PercentageMethod:
         )
 
         # Calculate SL and TP
+        sl_mult = get_param('percentage', 'sl_buffer_ob_mult', 0.1)
         if bias == Bias.BULLISH:
-            signal.stop_loss = closest_ob.low - (closest_ob.high - closest_ob.low) * 0.1
+            signal.stop_loss = closest_ob.low - (closest_ob.high - closest_ob.low) * sl_mult
             signal.take_profit = h1_info['high']
             signal.zone_type = "discount"
         else:
-            signal.stop_loss = closest_ob.high + (closest_ob.high - closest_ob.low) * 0.1
+            signal.stop_loss = closest_ob.high + (closest_ob.high - closest_ob.low) * sl_mult
             signal.take_profit = h1_info['low']
             signal.zone_type = "premium"
 
