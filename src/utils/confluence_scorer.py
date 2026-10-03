@@ -6,6 +6,8 @@ Calculates confluence scores for trade setups across all methods
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
+from src.utils.params import get_param
+
 
 @dataclass
 class ConfluenceFactors:
@@ -138,10 +140,11 @@ class ConfluenceScorer:
             score += 1
             details.append("Impulse Aligned (+1)")
 
+        min_req = get_param('confluence', 'min_combined', 6)
         return {
             'score': score,
-            'min_required': 6,
-            'passed': score >= 6,
+            'min_required': min_req,
+            'passed': score >= min_req,
             'strength': 'Strong' if score >= 10 else 'Medium' if score >= 6 else 'Weak',
             'details': details
         }
@@ -196,10 +199,11 @@ class ConfluenceScorer:
             score += 2
             details.append("HTF Structure Aligned (+2)")
 
+        min_req = get_param('confluence', 'min_percentage', 5)
         return {
             'score': score,
-            'min_required': 5,
-            'passed': score >= 5,
+            'min_required': min_req,
+            'passed': score >= min_req,
             'strength': 'Strong' if score >= 8 else 'Medium' if score >= 5 else 'Weak',
             'details': details
         }
