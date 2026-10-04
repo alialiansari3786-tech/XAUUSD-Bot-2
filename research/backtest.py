@@ -120,6 +120,7 @@ def main():
     cut = times[int(len(times) * IS_SHARE)]
     busy = {n: times[0] for n in methods}
     seen, trades = set(), []
+    errs, found = {}, {}
 
     for k, t in enumerate(times):
         rp.t = t
@@ -128,8 +129,11 @@ def main():
                 continue
             try:
                 sig = m.analyze()
-            except Exception:
+            except Exception as ex:
+                errs.setdefault(name, []).append(repr(ex))
                 continue
+            if sig:
+                found[name] = found.get(name, 0) + 1
             if not sig:
                 continue
             key = (name, sig.bias.value, str(sig.timestamp))
@@ -143,6 +147,9 @@ def main():
         if k % 200 == 0:
             print(f"  replay {k}/{len(times)}", flush=True)
 
+    for n in methods:
+        e = errs.get(n, [])
+        print(f"{n}: signals {found.get(n, 0)}, errors {len(e)}", e[:1])
     print(f"\nIn-sample: before {cut} | Out-of-sample: from {cut}")
     print(f"Costs: spread {SPREAD} + fee {FEE} per oz | P&L in $ per oz\n")
     for label, pick in (("IN-SAMPLE", lambda x: x[1] < cut),
