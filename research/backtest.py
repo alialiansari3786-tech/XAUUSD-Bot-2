@@ -60,6 +60,7 @@ def load():
 
 def shared_bias(combined, percentage, data):
     """Replay version of Method 3's bias: agreement, no 01:00/17:45 caching."""
+    data = {**data, **combined.data_fetcher.fetch_multiple_timeframes(['D1'])}
     a, b = combined.get_current_bias(data), percentage.get_current_bias(data)
     return a if a is not None and a == b else None
 
@@ -140,6 +141,8 @@ def main():
             if key in seen:
                 continue
             seen.add(key)
+            if len(seen) <= 5:
+                print(f"  SIGNAL {name} {sig.bias.value} entry {sig.entry_price:.2f} sl {sig.stop_loss:.2f} tp {sig.take_profit:.2f} price {sim.loc[:t].Close.iloc[-1]:.2f}")
             res = simulate(sig, sim, t)
             if res:
                 trades.append((name, t, res[0], res[1]))
