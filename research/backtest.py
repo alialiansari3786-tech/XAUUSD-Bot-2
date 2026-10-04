@@ -142,7 +142,7 @@ def main():
                 continue
             seen.add(key)
             if len(seen) <= 5:
-                print(f"  SIGNAL {name} {sig.bias.value} entry {sig.entry_price:.2f} sl {sig.stop_loss:.2f} tp {sig.take_profit:.2f} price {sim.loc[:t].Close.iloc[-1]:.2f}")
+                print(f"  SIGNAL {name} {sig.bias.value} entry {sig.entry_price:.2f} sl {sig.stop_loss:.2f} tp {sig.take_profit:.2f} price {frames['M15'].loc[:t].Close.iloc[-1]:.2f}")
             res = simulate(sig, sim, t)
             if res:
                 trades.append((name, t, res[0], res[1]))
