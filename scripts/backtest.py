@@ -15,12 +15,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.core.data_fetcher import DataFetcher
 from src.methods.combined_method import CombinedMethod
 from src.methods.percentage_method import PercentageMethod
-from src.methods.liquidity_sar_method import LiquiditySARMethod
+from src.methods.liquidity_msnr_method import LiquidityMSNRMethod
 from src.utils.logger import setup_logger
 from config.settings import settings
 
 
 logger = setup_logger(__name__, 'INFO')
+
+# Backtest reads the daily-collected CSVs (data/collected/XAUUSD_<TF>.csv)
+settings.CSV_DATA_PATH = settings.BASE_DIR / 'data' / 'collected'
 
 
 class Backtester:
@@ -36,12 +39,16 @@ class Backtester:
         self.data_fetcher = DataFetcher(use_csv=use_csv)
         self.combined_method = CombinedMethod(self.data_fetcher)
         self.percentage_method = PercentageMethod(self.data_fetcher)
-        self.liquidity_sar_method = LiquiditySARMethod(self.data_fetcher)
+        self.liquidity_msnr_method = LiquidityMSNRMethod(
+            self.data_fetcher,
+            combined_method=self.combined_method,
+            percentage_method=self.percentage_method
+        )
 
         self.results = {
             'Combined Method': [],
             'Percentage Method': [],
-            'Liquidity SAR Method': []
+            'Liquidity MSNR Method': []
         }
 
     def run(self, methods: List[str] = None):
@@ -53,7 +60,7 @@ class Backtester:
         """
 
         if methods is None:
-            methods = ['combined', 'percentage', 'liquidity_sar']
+            methods = ['combined', 'percentage', 'liquidity_msnr']
 
         logger.info("=" * 60)
         logger.info("BACKTESTING STARTED")
@@ -74,11 +81,11 @@ class Backtester:
             if signal:
                 self.results['Percentage Method'].append(signal)
 
-        if 'liquidity_sar' in methods:
-            logger.info("\n--- Testing Liquidity SAR Method ---")
-            signal = self._test_method(self.liquidity_sar_method, 'Liquidity SAR Method')
+        if 'liquidity_msnr' in methods:
+            logger.info("\n--- Testing Liquidity MSNR Method ---")
+            signal = self._test_method(self.liquidity_msnr_method, 'Liquidity MSNR Method')
             if signal:
-                self.results['Liquidity SAR Method'].append(signal)
+                self.results['Liquidity MSNR Method'].append(signal)
 
         # Print summary
         self._print_summary()
@@ -148,7 +155,7 @@ def main():
     parser.add_argument(
         '--methods',
         nargs='+',
-        choices=['combined', 'percentage', 'liquidity_sar', 'all'],
+        choices=['combined', 'percentage', 'liquidity_msnr', 'all'],
         default=['all'],
         help='Methods to test (default: all)'
     )
@@ -172,7 +179,7 @@ def main():
 
     # Parse methods
     if 'all' in args.methods:
-        methods = ['combined', 'percentage', 'liquidity_sar']
+        methods = ['combined', 'percentage', 'liquidity_msnr']
     else:
         methods = args.methods
 
