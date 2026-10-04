@@ -367,6 +367,10 @@ class DataFetcher:
             # Sort by date (Twelve Data returns newest first)
             data = data.sort_index()
 
+            # Spot gold has no volume on Twelve Data: fill with 0
+            if 'Volume' not in data.columns:
+                data['Volume'] = 0
+
             # Select only OHLCV columns
             data = data[['Open', 'High', 'Low', 'Close', 'Volume']]
 
