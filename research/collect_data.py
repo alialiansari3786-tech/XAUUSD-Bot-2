@@ -1,5 +1,5 @@
 """
-Daily data collector: saves M5/M15/H1 bars to data/collected/ as CSV.
+Daily data collector: saves M5/M15/H1/H4/D1/W1/MN bars to data/collected/ as CSV.
 Source order: Saxo, then Twelve Data (yfinance is skipped on purpose,
 its delayed/basis-corrected futures prices would pollute research data).
 Only new bars are added; existing bars are never duplicated.
@@ -21,7 +21,7 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__, settings.LOG_LEVEL)
 
-TIMEFRAMES = ['M5', 'M15', 'H1']
+TIMEFRAMES = ['M5', 'M15', 'H1', 'H4', 'D1', 'W1', 'MN']
 OUT_DIR = ROOT / 'data' / 'collected'
 COLS = ['Open', 'High', 'Low', 'Close', 'Volume']
 
