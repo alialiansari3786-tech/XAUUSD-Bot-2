@@ -269,9 +269,11 @@ class SaxoClient:
 
             page_df = pd.DataFrame(samples)
             page_df['Time'] = pd.to_datetime(page_df['Time'])
-            page_df = page_df.set_index('Time').rename(columns={
-                'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close'
-            })
+            page_df = page_df.set_index('Time')
+            # FX candles come as bid/ask pairs: use the mid price
+            for col in ('Open', 'High', 'Low', 'Close'):
+                if col not in page_df.columns and f'{col}Bid' in page_df.columns:
+                    page_df[col] = (page_df[f'{col}Bid'] + page_df[f'{col}Ask']) / 2
             if 'Volume' not in page_df.columns:
                 page_df['Volume'] = 0
 
