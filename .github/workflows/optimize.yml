@@ -2,8 +2,9 @@ name: Optimize
 
 on:
   schedule:
-    # Sundays 03:17 UTC (off the live bot's :00/:15/:30/:45 slots)
-    - cron: '17 3 * * 0'
+    # Saturday 02:00 UTC = 4 hours after gold closes (Friday 22:00 UTC)
+    # Sunday 02:00 UTC = retry in case Saturday's run fails
+    - cron: '0 2 * * 6,0'
   workflow_dispatch:
 
 permissions:
