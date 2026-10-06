@@ -125,7 +125,7 @@ class LiquidityMSNRMethod:
     def analyze(self) -> Optional[MSNRSignal]:
         logger.info("Running Liquidity MSNR Method analysis")
 
-        timeframes = ['H4', 'H1', 'M15', 'M5']
+        timeframes = ['D1', 'H4', 'H1', 'M15', 'M5']
         data = self.data_fetcher.fetch_multiple_timeframes(timeframes)
 
         if not all(tf in data for tf in ['H1', 'M15']):
