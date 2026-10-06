@@ -1,0 +1,60 @@
+name: Optimize
+
+on:
+  schedule:
+    # Sundays 03:17 UTC (off the live bot's :00/:15/:30/:45 slots)
+    - cron: '17 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run optimizer
+      env:
+        PYTHONPATH: ${{ github.workspace }}
+        LOG_LEVEL: "ERROR"
+        OPT_MAX_TRIALS: "200"
+        OPT_MIN_TRADES: "30"
+        OPT_BUDGET_MIN: "300"
+      run: python research/optimize.py
+
+    - name: Open pull request with report
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        BRANCH="optimize/report-${{ github.run_id }}"
+        if [ "$BRANCH" = "main" ]; then
+          echo "Refusing to push to main"; exit 1
+        fi
+        git config --local user.email "actions@github.com"
+        git config --local user.name "github-actions[bot]"
+        git checkout -b "$BRANCH"
+        git add -f results/report.md
+        git commit -m "Optimization report ${{ github.run_id }}"
+        git push origin "HEAD:refs/heads/$BRANCH"
+        gh pr create \
+          --base main \
+          --head "$BRANCH" \
+          --title "Optimization report $(date -u +%Y-%m-%d)" \
+          --body-file results/report.md
