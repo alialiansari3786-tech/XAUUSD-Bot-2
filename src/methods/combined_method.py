@@ -311,6 +311,27 @@ class CombinedMethod:
         if not aligned_obs:
             return None
 
+        # Only consider OB zones near current price on the correct side
+        # (demand at/below price for bullish, supply at/above for bearish),
+        # so the limit entry can realistically fill.
+        ref_df = data['M15'] if 'M15' in data else data['M5']
+        ref_price = ref_df['Close'].iloc[-1]
+        max_dist_pct = get_param('combined', 'max_entry_distance_pct', 0.6)
+
+        def _near(group):
+            if group['bias'] == Bias.BULLISH:
+                if group['avg_low'] > ref_price:
+                    return False
+                return (ref_price - group['avg_high']) / ref_price * 100 <= max_dist_pct
+            if group['avg_high'] < ref_price:
+                return False
+            return (group['avg_low'] - ref_price) / ref_price * 100 <= max_dist_pct
+
+        aligned_obs = [g for g in aligned_obs if _near(g)]
+        if not aligned_obs:
+            logger.debug(f"No aligned OB zone within {max_dist_pct}% of price {ref_price:.2f}")
+            return None
+
         # Take best aligned group (highest TF count)
         best_group = aligned_obs[0]
         bias = best_group['bias']
