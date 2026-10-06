@@ -329,7 +329,19 @@ class CombinedMethod:
 
         aligned_obs = [g for g in aligned_obs if _near(g)]
         if not aligned_obs:
-            logger.debug(f"No aligned OB zone within {max_dist_pct}% of price {ref_price:.2f}")
+            return None
+
+        # Only use OB zones within 1% of current price (ignore old far-away zones)
+        _px = data['M15']['Close'].iloc[-1] if 'M15' in data else data['M5']['Close'].iloc[-1]
+
+        def _dist_pct(g):
+            if g['avg_low'] <= _px <= g['avg_high']:
+                return 0.0
+            return min(abs(_px - g['avg_low']), abs(_px - g['avg_high'])) / _px * 100
+
+        aligned_obs = [g for g in aligned_obs if _dist_pct(g) <= 1.0]
+        if not aligned_obs:
+            logger.debug("Aligned OB zones all too far from current price - no entry")
             return None
 
         # Take best aligned group (highest TF count)
