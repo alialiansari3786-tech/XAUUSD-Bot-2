@@ -51,6 +51,8 @@ class STLSTHLevel:
     trading_range_start: Optional[float] = None
     trading_range_end: Optional[float] = None
     trend: Optional[Bias] = None
+    leg_start: Optional[pd.Timestamp] = None
+    leg_end: Optional[pd.Timestamp] = None
 
 
 @dataclass
@@ -200,6 +202,7 @@ class StructureDetector:
         tp_idx = a + int(np.argmax(H[a:b + 1]))
         tp = H[tp_idx]
         idm, conf, taken, origin = None, None, False, b
+        leg = (tp_idx, b)
 
         for i in range(b + 1, n):
             H, L, C = spaces[space]
@@ -209,6 +212,7 @@ class StructureDetector:
                 Ho = spaces[space][0]
                 tp_idx = tp_idx + int(np.argmax(Ho[tp_idx:i + 1]))
                 tp = Ho[tp_idx]
+                leg = (tp_idx, i)
                 idm, conf, taken, origin = None, None, False, i
                 continue
 
@@ -223,6 +227,7 @@ class StructureDetector:
                     conf = idm + int(np.argmin(L[idm:i + 1]))
             elif C[i] < L[conf]:  # body close through the confirmation point
                 tp_idx = conf + int(np.argmax(H[conf:i + 1]))
+                leg = (tp_idx, i)
                 tp = H[tp_idx]
                 idm, conf, taken, origin = None, None, False, i
 
@@ -239,6 +244,8 @@ class StructureDetector:
         else:
             level.stl = main
             level.trend = Bias.BULLISH
+        level.leg_start = df.index[leg[0]]
+        level.leg_end = df.index[leg[1]]
         level.idm = idm_pt
         level.new_stl_confirmation = conf_pt
         if conf_pt is not None:
@@ -249,7 +256,7 @@ class StructureDetector:
         conf_txt = f"{conf_pt.price:.2f}" if conf_pt is not None else "none"
         logger.info(
             f"{timeframe} structure: {level.trend.value} | Recent {'STH' if space == 0 else 'STL'} {main.price:.2f} | "
-            f"IDM {idm_txt} | Confirmation point {conf_txt}"
+            f"IDM {idm_txt} | Confirmation point {conf_txt} | Leg {level.leg_start} to {level.leg_end}"
         )
         return level
 
