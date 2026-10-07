@@ -147,11 +147,13 @@ class CombinedMethod:
             return None
 
         # Step 5: Find entry on 15m or 5m
-        signal = self._find_entry(
+        signal = self._find_entry_trend(
             data,
             aligned_obs,
             daily_stl_sth,
-            weekly_context
+            weekly_context,
+            h1_stl_sth.trend,
+            m15_stl_sth.trend
         )
 
         if signal:
@@ -297,6 +299,153 @@ class CombinedMethod:
         aligned_groups.sort(key=lambda x: x.get('tf_count', 0), reverse=True)
 
         return aligned_groups
+
+    def _find_entry_trend(
+        self,
+        data: Dict[str, pd.DataFrame],
+        aligned_obs: List[Dict],
+        stl_sth: STLSTHLevel,
+        weekly_context: Dict,
+        bias: Optional[Bias],
+        m15_trend: Optional[Bias]
+    ) -> Optional[CombinedSignal]:
+        """
+        Direction = 1H trend. Flow:
+        1) HTF OB zone (D1+H4+H1, D1+H4, D1+H1 or H4+H1) in that direction,
+           tapped by price within the last 96 M15 candles
+        2) 15m trend has turned into the 1H direction
+        3) Entry OB near price: H4+H1+M15, H1+M15 or M15-only
+        4) SL = recent M15 swing low (buy) / swing high (sell);
+           TP = nearest liquidity or opposite OB (H4+H1+M15 / H1+M15 / M15-only)
+        """
+
+        if bias is None or bias == Bias.NEUTRAL:
+            logger.debug("No 1H trend - no entry")
+            return None
+        if m15_trend != bias:
+            logger.debug(f"15m trend ({m15_trend.value if m15_trend else None}) not aligned with 1H trend ({bias.value}) - no entry")
+            return None
+
+        m15 = data['M15']
+        price = m15['Close'].iloc[-1]
+        bull = bias == Bias.BULLISH
+
+        # 1) HTF OB zone in trade direction, tapped recently
+        htf_groups = [
+            g for g in aligned_obs
+            if g['bias'] == bias and set(g['timeframes']) <= {'D1', 'H4', 'H1'}
+        ]
+        recent = m15.tail(96)
+        tapped = [
+            g for g in htf_groups
+            if ((recent['Low'] <= g['avg_high']) & (recent['High'] >= g['avg_low'])).any()
+        ]
+        if not tapped:
+            logger.debug(f"No {bias.value} HTF OB zone (D1/H4/H1) tapped in the last 96 M15 candles - no entry")
+            return None
+        htf = max(tapped, key=lambda g: len(g['timeframes']))
+
+        # 3) Entry OB near price
+        order = ['H4', 'H1', 'M15']
+
+        def zones(b):
+            out = []
+            for g in self.ob_detector.check_ob_alignment(order):
+                tfs = set(g['timeframes'])
+                if g['bias'] == b and tfs in ({'H4', 'H1', 'M15'}, {'H1', 'M15'}):
+                    m15_ob = [ob for ob in g['obs'] if ob.timeframe == 'M15'][0]
+                    out.append((len(tfs), g['avg_low'], g['avg_high'], '+'.join(t for t in order if t in tfs), m15_ob.timestamp))
+            for ob in self.ob_detector.get_fresh_obs('M15', bias=b):
+                out.append((1, ob.low, ob.high, 'M15', ob.timestamp))
+            return out
+
+        max_dist_pct = get_param('combined', 'max_entry_distance_pct', 0.6)
+
+        def near(z):
+            lo, hi = z[1], z[2]
+            if bull:
+                return lo <= price and (price - hi) / price * 100 <= max_dist_pct
+            return hi >= price and (lo - price) / price * 100 <= max_dist_pct
+
+        def dist(z):
+            lo, hi = z[1], z[2]
+            return 0.0 if lo <= price <= hi else min(abs(price - lo), abs(price - hi))
+
+        entry_zones = [z for z in zones(bias) if near(z)]
+        if not entry_zones:
+            logger.debug("No fresh M15 / H1+M15 / H4+H1+M15 entry OB near price - no entry")
+            return None
+        best = max(entry_zones, key=lambda z: (z[0], -dist(z)))
+        entry = best[1] if bull else best[2]
+        ob_label, ob_ts = best[3], best[4]
+
+        # 4) SL = recent M15 swing beyond entry
+        swing_src = m15.tail(300)
+        if bull:
+            swings = [s for s in self.structure_detector._find_swing_lows(swing_src, 5) if s.price < entry]
+        else:
+            swings = [s for s in self.structure_detector._find_swing_highs(swing_src, 5) if s.price > entry]
+        if not swings:
+            logger.debug("No recent M15 swing to place the stop loss - no entry")
+            return None
+        stop_loss = swings[-1].price
+
+        # TP = nearest untaken liquidity or opposite OB (H4/H1/M15)
+        from src.core.liquidity_detector import LiquidityDetector
+        liq = LiquidityDetector()
+        liq_data = {tf: data[tf] for tf in ('H4', 'H1', 'M15') if tf in data}
+        levels = liq.detect_all_liquidity(liq_data, entry)
+        targets = [lv.price for lv in liq.get_untaken_liquidity(levels, bias='bullish' if bull else 'bearish')]
+        opp = Bias.BEARISH if bull else Bias.BULLISH
+        for z in zones(opp):
+            targets.append(z[1] if bull else z[2])
+
+        if bull:
+            valid = [p for p in targets if p > entry]
+            take_profit = min(valid) if valid else None
+        else:
+            valid = [p for p in targets if p < entry]
+            take_profit = max(valid) if valid else None
+        if take_profit is None:
+            rr = get_param('combined', 'fallback_rr', 2.0)
+            risk = abs(entry - stop_loss)
+            take_profit = entry + risk * rr if bull else entry - risk * rr
+
+        # Confluence
+        fvgs = self.fvg_detector.detect_fvgs(m15, 'M15')
+        factors = ConfluenceFactors()
+        factors.mss_present = True
+        factors.ob_fresh = True
+        factors.ob_untested = True
+        if len(htf['timeframes']) >= 3:
+            factors.ob_alignment_3tf = True
+        else:
+            factors.ob_alignment_2tf = True
+        if any(f.fresh and f.bias == bias for f in fvgs):
+            factors.fvg_fresh = True
+
+        result = self.confluence_scorer.score_combined_method(factors)
+        if not result['passed']:
+            logger.debug(f"Confluence failed: {result['score']}/{result['min_required']}")
+            return None
+
+        return CombinedSignal(
+            timestamp=ob_ts,
+            bias=bias,
+            entry_price=entry,
+            entry_timeframe='M15',
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            stl_sth_level=stl_sth,
+            idm_present=stl_sth.idm is not None,
+            trading_range=(stl_sth.trading_range_start, stl_sth.trading_range_end) if stl_sth.trading_range_start else None,
+            aligned_timeframes=htf['timeframes'],
+            ob_count=len(htf['obs']),
+            confluence_score=result['score'],
+            confluence_details=list(result['details']) + [f"Entry OB: {ob_label}"],
+            weekly_pullback=weekly_context.get('in_pullback', False),
+            htf_target=None
+        )
 
     def _find_entry(
         self,
