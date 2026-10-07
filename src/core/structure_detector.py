@@ -50,6 +50,7 @@ class STLSTHLevel:
     new_stl_confirmation: Optional[SwingPoint] = None
     trading_range_start: Optional[float] = None
     trading_range_end: Optional[float] = None
+    trend: Optional[Bias] = None
 
 
 @dataclass
@@ -128,6 +129,129 @@ class StructureDetector:
         return events
 
     def track_stl_sth(
+        self,
+        df: pd.DataFrame,
+        timeframe: str = 'M15'
+    ) -> STLSTHLevel:
+        """
+        Daily STH/STL tracking using the user's rules (downtrend shown,
+        uptrend is the exact mirror): MSS swing point -> body close
+        through it (MSS) -> Recent STH -> IDM (minor swing high) -> IDM
+        taken (wick counts) -> New STH Confirmation Point (lowest low
+        between IDM start and IDM taken) -> body close below it -> New
+        Recent STH. A body close above the Recent STH = MSS for upside.
+        """
+
+        level = STLSTHLevel()
+        n = len(df)
+        if n < 30:
+            return level
+
+        swing_lb = get_lookback_periods(timeframe)['swing']
+        minor_lb = 3
+
+        highs = df['High'].to_numpy(dtype=float)
+        lows = df['Low'].to_numpy(dtype=float)
+        closes = df['Close'].to_numpy(dtype=float)
+        # space 0 tracks the STH (downtrend); space 1 is its mirror (negated prices, tracks the STL)
+        spaces = [(highs, lows, closes), (-lows, -highs, -closes)]
+
+        def swings(arr, lb):
+            out = []
+            for i in range(lb, n - lb):
+                w = arr[i - lb:i + lb + 1]
+                if arr[i] == w.max() and (w == arr[i]).sum() == 1:
+                    out.append(i)
+            return out
+
+        def find_seed(s):
+            H, L, C = spaces[s]
+            hs = swings(H, swing_lb)
+            ls = swings(-L, swing_lb)
+            best = None
+            for k in range(1, len(hs)):
+                h, ph = hs[k], hs[k - 1]
+                if H[h] <= H[ph]:
+                    continue
+                cand = [x for x in ls if ph < x < h]
+                if not cand:
+                    continue
+                a = min(cand, key=lambda x: L[x])  # leg start = MSS swing point B(a)
+                broken = np.nonzero(C[a + 1:] < L[a])[0]
+                if len(broken) == 0:
+                    continue
+                b = a + 1 + int(broken[0])  # MSS candle B(b)
+                if b <= h:
+                    continue
+                if best is None or b < best[0]:
+                    best = (b, a)
+            return best
+
+        seeds = []
+        for s in (0, 1):
+            r = find_seed(s)
+            if r is not None:
+                seeds.append((r[0], r[1], s))
+        if not seeds:
+            return level
+
+        b, a, space = min(seeds)
+        H, L, C = spaces[space]
+        tp_idx = a + int(np.argmax(H[a:b + 1]))
+        tp = H[tp_idx]
+        idm, conf, taken, origin = None, None, False, b
+
+        for i in range(b + 1, n):
+            H, L, C = spaces[space]
+
+            if C[i] > tp:  # body close beyond Recent STH = MSS for the other side
+                space = 1 - space
+                Ho = spaces[space][0]
+                tp_idx = tp_idx + int(np.argmax(Ho[tp_idx:i + 1]))
+                tp = Ho[tp_idx]
+                idm, conf, taken, origin = None, None, False, i
+                continue
+
+            if not taken:
+                j = i - minor_lb
+                if j > origin:
+                    w = H[j - minor_lb:j + minor_lb + 1]
+                    if H[j] == w.max() and (w == H[j]).sum() == 1:
+                        idm = j  # newest IDM wins
+                if idm is not None and H[i] > H[idm]:  # wick counts
+                    taken = True
+                    conf = idm + int(np.argmin(L[idm:i + 1]))
+            elif C[i] < L[conf]:  # body close through the confirmation point
+                tp_idx = conf + int(np.argmax(H[conf:i + 1]))
+                tp = H[tp_idx]
+                idm, conf, taken, origin = None, None, False, i
+
+        H, L, C = spaces[space]
+        sign = 1.0 if space == 0 else -1.0
+        is_hi = (space == 0)
+        main = SwingPoint(tp_idx, df.index[tp_idx], float(sign * H[tp_idx]), is_hi)
+        idm_pt = SwingPoint(idm, df.index[idm], float(sign * H[idm]), is_hi) if idm is not None else None
+        conf_pt = SwingPoint(conf, df.index[conf], float(sign * L[conf]), not is_hi) if conf is not None else None
+
+        if space == 0:
+            level.sth = main
+            level.trend = Bias.BEARISH
+        else:
+            level.stl = main
+            level.trend = Bias.BULLISH
+        level.idm = idm_pt
+        level.new_stl_confirmation = conf_pt
+        if conf_pt is not None:
+            level.trading_range_start = main.price
+            level.trading_range_end = conf_pt.price
+
+        logger.info(
+            f"Daily structure: {level.trend.value} | Recent {'STH' if space == 0 else 'STL'} {main.price:.2f} | "
+            f"IDM {idm_pt.price:.2f if idm_pt else 'none'} | Confirmation point {conf_pt.price:.2f if conf_pt else 'none'}"
+        )
+        return level
+
+    def _track_stl_sth_old(
         self,
         df: pd.DataFrame,
         timeframe: str = 'M15'
