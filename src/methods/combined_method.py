@@ -118,6 +118,7 @@ class CombinedMethod:
 
         # Step 1: Analyze Weekly for HTF context
         weekly_context = self._analyze_weekly(data.get('W1'), data['D1'])
+        weekly_context['target'] = None  # Weekly is context only, never the take profit
 
         # Step 2: Track STL/STH on Daily
         daily_stl_sth = self.structure_detector.track_stl_sth(data['D1'], 'D1')
@@ -415,9 +416,7 @@ class CombinedMethod:
         if fresh_fvgs:
             factors.fvg_fresh = True
 
-        # HTF context
-        if weekly_context.get('in_pullback'):
-            factors.htf_trend_aligned = True
+        # Weekly is context only - it adds nothing to the confluence score
 
         # IDM present
         if stl_sth.idm:
