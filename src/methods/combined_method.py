@@ -312,7 +312,7 @@ class CombinedMethod:
         """
         Direction = 1H trend. Flow:
         1) HTF OB zone (D1+H4+H1, D1+H4, D1+H1 or H4+H1) in that direction,
-           tapped by price within the last 96 M15 candles
+           tapped by price within the last 480 M15 candles (about 1 week)
         2) 15m trend has turned into the 1H direction
         3) Entry OB near price: H4+H1+M15, H1+M15 or M15-only
         4) SL = recent M15 swing low (buy) / swing high (sell);
@@ -335,13 +335,13 @@ class CombinedMethod:
             g for g in aligned_obs
             if g['bias'] == bias and set(g['timeframes']) <= {'D1', 'H4', 'H1'}
         ]
-        recent = m15.tail(96)
+        recent = m15.tail(480)
         tapped = [
             g for g in htf_groups
             if ((recent['Low'] <= g['avg_high']) & (recent['High'] >= g['avg_low'])).any()
         ]
         if not tapped:
-            logger.debug(f"No {bias.value} HTF OB zone (D1/H4/H1) tapped in the last 96 M15 candles - no entry")
+            logger.debug(f"No {bias.value} HTF OB zone (D1/H4/H1) tapped in the last 480 M15 candles - no entry")
             return None
         htf = max(tapped, key=lambda g: len(g['timeframes']))
 
