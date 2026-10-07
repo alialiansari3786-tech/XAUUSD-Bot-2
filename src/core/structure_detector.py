@@ -245,9 +245,11 @@ class StructureDetector:
             level.trading_range_start = main.price
             level.trading_range_end = conf_pt.price
 
+        idm_txt = f"{idm_pt.price:.2f}" if idm_pt is not None else "none"
+        conf_txt = f"{conf_pt.price:.2f}" if conf_pt is not None else "none"
         logger.info(
-            f"Daily structure: {level.trend.value} | Recent {'STH' if space == 0 else 'STL'} {main.price:.2f} | "
-            f"IDM {idm_pt.price:.2f if idm_pt else 'none'} | Confirmation point {conf_pt.price:.2f if conf_pt else 'none'}"
+            f"{timeframe} structure: {level.trend.value} | Recent {'STH' if space == 0 else 'STL'} {main.price:.2f} | "
+            f"IDM {idm_txt} | Confirmation point {conf_txt}"
         )
         return level
 
