@@ -129,6 +129,9 @@ class CombinedMethod:
         # Step 2c: Same method on 1H (LTF trend inside the Daily/4H trend)
         h1_stl_sth = self.structure_detector.track_stl_sth(data['H1'], 'H1')
 
+        # Step 2d: Same method on 15m (micro-LTF trend inside the 1H trend)
+        m15_stl_sth = self.structure_detector.track_stl_sth(data['M15'], 'M15')
+
         # Step 3: Identify trading ranges and mark OBs
         ob_zones = self._identify_ob_zones(data, daily_stl_sth)
 
