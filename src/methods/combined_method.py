@@ -123,6 +123,9 @@ class CombinedMethod:
         # Step 2: Track STL/STH on Daily
         daily_stl_sth = self.structure_detector.track_stl_sth(data['D1'], 'D1')
 
+        # Step 2b: Same method on 4H (intermediate trend inside the Daily trend)
+        h4_stl_sth = self.structure_detector.track_stl_sth(data['H4'], 'H4') if 'H4' in data else None
+
         # Step 3: Identify trading ranges and mark OBs
         ob_zones = self._identify_ob_zones(data, daily_stl_sth)
 
