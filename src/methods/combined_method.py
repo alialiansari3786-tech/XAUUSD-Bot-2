@@ -153,7 +153,7 @@ class CombinedMethod:
             daily_stl_sth,
             weekly_context,
             h1_stl_sth.trend,
-            m15_stl_sth.trend
+            m15_stl_sth
         )
 
         if signal:
@@ -307,7 +307,7 @@ class CombinedMethod:
         stl_sth: STLSTHLevel,
         weekly_context: Dict,
         bias: Optional[Bias],
-        m15_trend: Optional[Bias]
+        m15_level: STLSTHLevel
     ) -> Optional[CombinedSignal]:
         """
         Direction = 1H trend. Flow:
@@ -321,6 +321,10 @@ class CombinedMethod:
 
         if bias is None or bias == Bias.NEUTRAL:
             logger.debug("No 1H trend - no entry")
+            return None
+        m15_trend = m15_level.trend
+        if m15_level.leg_start is None or m15_level.leg_end is None:
+            logger.debug("No 15m leg found - no entry")
             return None
         if m15_trend != bias:
             logger.debug(f"15m trend ({m15_trend.value if m15_trend else None}) not aligned with 1H trend ({bias.value}) - no entry")
@@ -371,9 +375,10 @@ class CombinedMethod:
             lo, hi = z[1], z[2]
             return 0.0 if lo <= price <= hi else min(abs(price - lo), abs(price - hi))
 
-        entry_zones = [z for z in zones(bias) if near(z)]
+        leg_start, leg_end = m15_level.leg_start, m15_level.leg_end
+        entry_zones = [z for z in zones(bias) if near(z) and leg_start <= z[4] <= leg_end]
         if not entry_zones:
-            logger.debug("No fresh M15 / H1+M15 / H4+H1+M15 entry OB near price - no entry")
+            logger.debug("No fresh M15 / H1+M15 / H4+H1+M15 entry OB near price inside the 15m leg - no entry")
             return None
         best = max(entry_zones, key=lambda z: (z[0], -dist(z)))
         entry = best[1] if bull else best[2]
@@ -412,7 +417,6 @@ class CombinedMethod:
             take_profit = entry + risk * rr if bull else entry - risk * rr
 
         # Confluence
-        fvgs = self.fvg_detector.detect_fvgs(m15, 'M15')
         factors = ConfluenceFactors()
         factors.mss_present = True
         factors.ob_fresh = True
@@ -421,8 +425,6 @@ class CombinedMethod:
             factors.ob_alignment_3tf = True
         else:
             factors.ob_alignment_2tf = True
-        if any(f.fresh and f.bias == bias for f in fvgs):
-            factors.fvg_fresh = True
 
         result = self.confluence_scorer.score_combined_method(factors)
         if not result['passed']:
