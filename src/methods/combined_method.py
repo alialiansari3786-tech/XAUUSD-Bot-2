@@ -152,7 +152,7 @@ class CombinedMethod:
             aligned_obs,
             daily_stl_sth,
             weekly_context,
-            h1_stl_sth.trend,
+            h1_stl_sth,
             m15_stl_sth
         )
 
@@ -306,7 +306,7 @@ class CombinedMethod:
         aligned_obs: List[Dict],
         stl_sth: STLSTHLevel,
         weekly_context: Dict,
-        bias: Optional[Bias],
+        h1_level: STLSTHLevel,
         m15_level: STLSTHLevel
     ) -> Optional[CombinedSignal]:
         """
@@ -319,6 +319,7 @@ class CombinedMethod:
            TP = nearest liquidity or opposite OB (H4+H1+M15 / H1+M15 / M15-only)
         """
 
+        bias = h1_level.trend
         if bias is None or bias == Bias.NEUTRAL:
             logger.debug("No 1H trend - no entry")
             return None
@@ -381,7 +382,7 @@ class CombinedMethod:
             logger.debug("No fresh M15 / H1+M15 / H4+H1+M15 entry OB near price inside the 15m leg - no entry")
             return None
         best = max(entry_zones, key=lambda z: (z[0], -dist(z)))
-        entry = best[1] if bull else best[2]
+        entry = (best[1] + best[2]) / 2  # mid point of the POI zone
         ob_label, ob_ts = best[3], best[4]
 
         # 4) SL = recent M15 swing beyond entry
@@ -395,26 +396,33 @@ class CombinedMethod:
             return None
         stop_loss = swings[-1].price
 
-        # TP = nearest untaken liquidity or opposite OB (H4/H1/M15)
-        from src.core.liquidity_detector import LiquidityDetector
-        liq = LiquidityDetector()
-        liq_data = {tf: data[tf] for tf in ('H4', 'H1', 'M15') if tf in data}
-        levels = liq.detect_all_liquidity(liq_data, entry)
-        targets = [lv.price for lv in liq.get_untaken_liquidity(levels, bias='bullish' if bull else 'bearish')]
+        # TP: 1) nearest H4+H1 opposite OB or the H1 New Confirmation Point (trend direction)
+        #     2) nearest H1/M15 liquidity   3) 1:3 risk-to-reward
         opp = Bias.BEARISH if bull else Bias.BULLISH
-        for z in zones(opp):
-            targets.append(z[1] if bull else z[2])
+        targets = []
+        for g in self.ob_detector.check_ob_alignment(['H4', 'H1']):
+            if g['bias'] == opp and set(g['timeframes']) == {'H4', 'H1'}:
+                targets.append(g['avg_low'] if bull else g['avg_high'])
+        if h1_level.new_stl_confirmation is not None:
+            targets.append(h1_level.new_stl_confirmation.price)
 
-        if bull:
-            valid = [p for p in targets if p > entry]
-            take_profit = min(valid) if valid else None
-        else:
-            valid = [p for p in targets if p < entry]
-            take_profit = max(valid) if valid else None
+        def beyond(prices):
+            valid = [p for p in prices if (p > entry if bull else p < entry)]
+            if not valid:
+                return None
+            return min(valid) if bull else max(valid)
+
+        take_profit = beyond(targets)
         if take_profit is None:
-            rr = get_param('combined', 'fallback_rr', 2.0)
+            from src.core.liquidity_detector import LiquidityDetector
+            liq = LiquidityDetector()
+            liq_data = {tf: data[tf] for tf in ('H1', 'M15') if tf in data}
+            levels = liq.detect_all_liquidity(liq_data, entry)
+            untaken = liq.get_untaken_liquidity(levels, bias='bullish' if bull else 'bearish')
+            take_profit = beyond([lv.price for lv in untaken])
+        if take_profit is None:
             risk = abs(entry - stop_loss)
-            take_profit = entry + risk * rr if bull else entry - risk * rr
+            take_profit = entry + risk * 3.0 if bull else entry - risk * 3.0
 
         # Confluence
         factors = ConfluenceFactors()
