@@ -98,21 +98,8 @@ class DataFetcher:
         if not force_refresh and cache_key in self.data_cache:
             cached_data = self.data_cache[cache_key]
             if not cached_data.empty:
-                last_timestamp = cached_data.index[-1]
-
-                # Handle timezone-aware timestamps
-                now = datetime.now()
-                if hasattr(last_timestamp, 'tz') and last_timestamp.tz is not None:
-                    import pytz
-                    last_timestamp_utc = last_timestamp.astimezone(pytz.UTC)
-                    now_utc = pytz.UTC.localize(now)
-                    age_minutes = (now_utc - last_timestamp_utc).total_seconds() / 60
-                else:
-                    age_minutes = (now - last_timestamp).total_seconds() / 60
-
-                if age_minutes < settings.SCAN_INTERVAL_MINUTES:
-                    logger.debug(f"Using cached data for {timeframe} (age: {age_minutes:.1f} min)")
-                    return cached_data
+                logger.debug(f"Using this cycle's cached data for {timeframe}")
+                return cached_data
 
         # CSV mode (backtesting)
         if self.use_csv:
@@ -199,6 +186,7 @@ class DataFetcher:
     def reset_cycle_sources(self) -> None:
         """Call at the start of each scan cycle before fetching any timeframes."""
         self.sources_used_this_cycle = []
+        self.data_cache = {}  # new cycle = fetch fresh data once, then share it across all methods
 
     def _fetch_from_yfinance(
         self,
