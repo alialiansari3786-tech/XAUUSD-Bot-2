@@ -29,7 +29,7 @@
 1. Go to: https://github.com/amanaman3786/XAUUSD-Bot-2/settings/secrets/actions
 2. Click **New repository secret**
 3. Name: `TWELVE_DATA_API_KEY`
-4. Value: `2d0afc09cfa64b3fb45f86cb17c11da8`
+4. Value: (paste your Twelve Data key here, never write it in a file)
 5. Click **Add secret**
 
 **Verify:** You should see 3 secrets:
