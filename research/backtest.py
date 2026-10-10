@@ -12,7 +12,7 @@ import pandas as pd
 from src.utils.timeframe_utils import TIMEFRAME_MINUTES
 import src.methods.liquidity_msnr_method as m3mod
 from src.methods.combined_method import CombinedMethod
-from src.methods.monthly_daily_hourly_method import PercentageMethod
+from src.methods.monthly_daily_hourly_method import MonthlyDailyHourlyMethod
 from src.methods.liquidity_msnr_method import LiquidityMSNRMethod
 
 DATA = ROOT / 'data' / 'collected'
@@ -109,7 +109,7 @@ def main():
         return
     sim = frames.get('M5', frames['M15'])
     rp = Replay(frames)
-    c, p = CombinedMethod(rp), PercentageMethod(rp)
+    c, p = CombinedMethod(rp), MonthlyDailyHourlyMethod(rp)
     methods = {'Combined': c, 'Percentage': p,
                'Liquidity MSNR': LiquidityMSNRMethod(rp, c, p)}
     m3mod.get_shared_bias = shared_bias  # no state files, no wall-clock use
