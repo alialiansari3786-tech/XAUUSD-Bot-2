@@ -483,6 +483,128 @@ class MonthlyDailyHourlyMethod:
         monthly_ob: Optional[Dict]
     ) -> Optional[MonthlyDailyHourlySignal]:
         """
+        M5 entry. Same structure method as Daily/H1 (0.375 pullback).
+        The trade follows the M5 trend, which may match H1 or be counter-1H.
+        Entry: the closest fresh M5 OB beyond the M5 0.375 level (above it
+        for a sell, below it for a buy), inside both the M5 short range and
+        the H1 broad range. An FVG near the OB is optional (+1 score).
+        Entry = the OB edge price touches first. SL = M5 Recent STH/STL.
+        TP is unchanged until the TP corrections.
+        """
+
+        m5 = analyze_daily_structure(m5_df, 'M5', 0.375)
+        if not m5.valid:
+            logger.debug("No M5 MSS found - M5 direction not confirmed")
+            return None
+
+        bias = m5.bias
+        bull = bias == Bias.BULLISH
+        counter_h1 = bias != h1_info['bias']
+        level_375 = m5.fib['0.375']
+        m5_low = min(m5.recent_sth, m5.confirmation)
+        m5_high = max(m5.recent_sth, m5.confirmation)
+        price = m5_df['Close'].iloc[-1]
+
+        # Fresh M5 OBs in the trade direction, beyond the 0.375 level and
+        # inside both the M5 short range and the H1 broad range
+        range_low = max(m5_low, h1_info['low'])
+        range_high = min(m5_high, h1_info['high'])
+        candidates = []
+        for ob in self.ob_detector.detect_order_blocks(m5_df, 'M5'):
+            if not ob.fresh or ob.bias != bias:
+                continue
+            if bull and ob.high > level_375:
+                continue
+            if not bull and ob.low < level_375:
+                continue
+            if ob.low < range_low or ob.high > range_high:
+                continue
+            candidates.append(ob)
+
+        if not candidates:
+            logger.debug(
+                f"No fresh M5 {bias.value} OB beyond the 0.375 level ({level_375:.2f}) "
+                f"inside M5 and H1 ranges - no signal"
+            )
+            return None
+
+        def distance(ob):
+            if ob.low <= price <= ob.high:
+                return 0.0
+            return min(abs(price - ob.low), abs(price - ob.high))
+
+        best = min(candidates, key=distance)
+
+        # Entry = the edge price touches first; SL = M5 Recent STH/STL
+        entry = best.high if bull else best.low
+        stop_loss = m5.recent_sth
+        if (bull and stop_loss >= entry) or (not bull and stop_loss <= entry):
+            logger.debug("M5 Recent STH/STL is not beyond the entry - no signal")
+            return None
+
+        # Optional FVG near the OB (above it for a buy, below it for a sell)
+        ob_height = best.high - best.low
+        fvgs = self.fvg_detector.detect_fvgs(m5_df, 'M5')
+        near_fvg = []
+        for f in fvgs:
+            if not f.fresh or f.bias != bias:
+                continue
+            if bull and best.low <= f.bottom <= best.high + ob_height:
+                near_fvg.append(f)
+            elif not bull and best.low - ob_height <= f.top <= best.high:
+                near_fvg.append(f)
+
+        # Confluence
+        factors = ConfluenceFactors()
+        factors.mss_present = True
+        factors.ob_fresh = True
+        factors.premium_discount_alignment = True  # OB is beyond the M5 0.375 level
+        factors.htf_structure_aligned = True
+        factors.fvg_present = bool(near_fvg)
+
+        confluence_result = self.confluence_scorer.score_percentage_method(factors)
+        if not confluence_result['passed']:
+            logger.debug(f"Confluence failed: {confluence_result['score']}/{confluence_result['min_required']}")
+            return None
+
+        details = list(confluence_result['details'])
+        details.append("Counter-1H trade" if counter_h1 else "With the 1H trend")
+
+        signal = MonthlyDailyHourlySignal(
+            timestamp=best.timestamp,
+            bias=bias,
+            entry_price=entry,
+            entry_timeframe='M5',
+            stop_loss=stop_loss,
+            daily_pullback_pct=daily_info.get('pullback_pct', 0.0),
+            h1_pullback_pct=h1_info['pullback_pct'],
+            m5_pullback_pct=m5.pullback_pct * 100,
+            in_premium_discount=True,
+            monthly_ob_low=monthly_ob['low'] if monthly_ob else None,
+            monthly_ob_high=monthly_ob['high'] if monthly_ob else None,
+            price_at_monthly_ob=monthly_ob['price_inside'] if monthly_ob else False,
+            confluence_score=confluence_result['score'],
+            confluence_details=details
+        )
+
+        # TP unchanged for now: the edge of the H1 range in the trade direction
+        if bull:
+            signal.take_profit = h1_info['high']
+            signal.zone_type = "discount"
+        else:
+            signal.take_profit = h1_info['low']
+            signal.zone_type = "premium"
+
+        return signal
+
+    def _find_m5_entry_old(
+        self,
+        m5_df: pd.DataFrame,
+        daily_info: Dict,
+        h1_info: Dict,
+        monthly_ob: Optional[Dict]
+    ) -> Optional[MonthlyDailyHourlySignal]:
+        """
         Find M5 entry point
 
         Looks for:
