@@ -1,5 +1,5 @@
 """
-Percentage Method (Method 2)
+Monthly-Daily-Hourly Method (Method 2)
 Monthly-Daily-Hourly-5m with percentage-based structure analysis
 """
 
@@ -23,7 +23,7 @@ logger = setup_logger(__name__, settings.LOG_LEVEL)
 
 
 @dataclass
-class PercentageSignal:
+class MonthlyDailyHourlySignal:
     """Trade signal from Percentage Method"""
     timestamp: pd.Timestamp
     method: str = "Monthly-Daily-Hourly"
@@ -51,7 +51,7 @@ class PercentageSignal:
     monthly_direction: str = ""
 
 
-class PercentageMethod:
+class MonthlyDailyHourlyMethod:
     """
     Method 2: Monthly-Daily-Hourly-5m
 
@@ -88,7 +88,7 @@ class PercentageMethod:
 
         return daily_info['bias']
 
-    def analyze(self) -> Optional[PercentageSignal]:
+    def analyze(self) -> Optional[MonthlyDailyHourlySignal]:
         """
         Run Percentage Method analysis
 
@@ -96,7 +96,7 @@ class PercentageMethod:
             Trade signal if found, None otherwise
         """
 
-        logger.info("Running Percentage Method analysis")
+        logger.info("Running Monthly-Daily-Hourly Method analysis")
 
         # Fetch required data
         timeframes = ['MN', 'D1', 'H1', 'M5']
@@ -375,7 +375,7 @@ class PercentageMethod:
         h1_info: Dict,
         monthly_direction: str,
         monthly_target: Optional[float]
-    ) -> Optional[PercentageSignal]:
+    ) -> Optional[MonthlyDailyHourlySignal]:
         """
         Find M5 entry point
 
@@ -450,7 +450,7 @@ class PercentageMethod:
         # NOTE: timestamp is the closest order block's own formation
         # time, not "now" - identifies the setup itself for dedup
         # purposes (see combined_method.py for the same pattern).
-        signal = PercentageSignal(
+        signal = MonthlyDailyHourlySignal(
             timestamp=closest_ob.timestamp,
             bias=bias,
             entry_price=(closest_ob.high + closest_ob.low) / 2,
