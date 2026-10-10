@@ -56,15 +56,22 @@ class DailyStructure:
     pullback_pct: float = 0.0        # how far the pullback went, as a fraction of the leg
 
 
-def analyze_daily_structure(df: pd.DataFrame) -> DailyStructure:
-    """Walk through the Daily candles and return the current Daily structure."""
+def analyze_daily_structure(
+    df: pd.DataFrame,
+    timeframe: str = 'D1',
+    pullback_fib: float = PULLBACK_FIB
+) -> DailyStructure:
+    """
+    Walk through the candles and return the current structure.
+    Daily uses the default 0.25 pullback; 1H passes 0.375.
+    """
 
     result = DailyStructure()
     n = len(df)
     if n < 30:
         return result
 
-    lb = get_lookback_periods('D1')['swing']
+    lb = get_lookback_periods(timeframe)['swing']
 
     highs = df['High'].to_numpy(dtype=float)
     lows = df['Low'].to_numpy(dtype=float)
@@ -137,7 +144,7 @@ def analyze_daily_structure(df: pd.DataFrame) -> DailyStructure:
             reached = False
             if pull_idx is not None:
                 c = L[conf_idx]
-                reached = H[pull_idx] >= c + PULLBACK_FIB * (H[tp_idx] - c)
+                reached = H[pull_idx] >= c + pullback_fib * (H[tp_idx] - c)
 
             if reached:
                 # Pullback reached 0.25 earlier: a body close below the
@@ -175,10 +182,10 @@ def analyze_daily_structure(df: pd.DataFrame) -> DailyStructure:
         leg = H[tp_idx] - L[conf_idx]
         if leg > 0:
             result.pullback_pct = float((H[pull_idx] - L[conf_idx]) / leg)
-            result.pullback_reached = result.pullback_pct >= PULLBACK_FIB
+            result.pullback_reached = result.pullback_pct >= pullback_fib
 
     logger.info(
-        f"Daily structure: {result.bias.value} | MSS {result.mss_time} | "
+        f"{timeframe} structure: {result.bias.value} | MSS {result.mss_time} | "
         f"Recent STH/STL {sth_price:.2f} | Confirmation {conf_price:.2f} | "
         f"Pullback {result.pullback_pct * 100:.0f}%"
     )
