@@ -26,7 +26,7 @@ logger = setup_logger(__name__, settings.LOG_LEVEL)
 class PercentageSignal:
     """Trade signal from Percentage Method"""
     timestamp: pd.Timestamp
-    method: str = "Percentage Method"
+    method: str = "Monthly-Daily-Hourly"
 
     # Entry details
     entry_price: float = 0.0
