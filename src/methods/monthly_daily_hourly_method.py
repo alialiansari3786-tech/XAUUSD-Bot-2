@@ -88,7 +88,7 @@ class MonthlyDailyHourlyMethod:
         if not h1_valid:
             return None
 
-        return daily_info['bias']
+        return h1_info['bias']
 
     def analyze(self) -> Optional[MonthlyDailyHourlySignal]:
         """
@@ -322,6 +322,48 @@ class MonthlyDailyHourlyMethod:
         daily_info: Dict
     ) -> Tuple[bool, Dict]:
         """
+        H1 structure: same method as Daily (see daily_structure.py) but the
+        pullback must reach 0.375. This is the LTF trend inside the Daily
+        trend, and it may or may not match the Daily direction. Passes as
+        soon as the MSS, Recent STH/STL and confirmation point exist.
+        Marks the OBs and the FVGs overlapping them (no Advance OB).
+        """
+
+        info = {}
+
+        structure = analyze_daily_structure(h1_df, 'H1', 0.375)
+        if not structure.valid:
+            logger.debug("No H1 MSS found - H1 direction not confirmed")
+            return False, info
+
+        info['structure'] = structure
+        info['bias'] = structure.bias
+        info['pullback_pct'] = structure.pullback_pct * 100
+        info['fib'] = structure.fib
+
+        # Broad trading range: Recent STH/STL to the confirmation point
+        info['low'] = min(structure.recent_sth, structure.confirmation)
+        info['high'] = max(structure.recent_sth, structure.confirmation)
+
+        leg_df = h1_df.loc[structure.recent_sth_time:]
+        obs = self.ob_detector.detect_order_blocks(leg_df, 'H1')
+        fresh_obs = [ob for ob in obs if ob.fresh and ob.bias == structure.bias]
+        fvgs = self.fvg_detector.detect_fvgs(leg_df, 'H1')
+        fresh_fvgs = [f for f in fvgs if f.fresh and f.bias == structure.bias]
+
+        info['obs'] = fresh_obs
+        info['fvgs'] = [
+            c['fvg'] for c in self.fvg_detector.check_fvg_ob_confluence(fresh_fvgs, fresh_obs)
+        ]
+
+        return True, info
+
+    def _analyze_h1_structure_old(
+        self,
+        h1_df: pd.DataFrame,
+        daily_info: Dict
+    ) -> Tuple[bool, Dict]:
+        """
         Analyze H1 structure
 
         Checks for:
@@ -456,7 +498,7 @@ class MonthlyDailyHourlyMethod:
         structure_events = self.structure_detector.detect_structure(m5_df, 'M5')
 
         # Get recent MSS matching bias
-        bias = daily_info['bias']
+        bias = h1_info['bias']  # trade follows the 1H trend
         recent_mss = [
             e for e in structure_events
             if e.type == StructureType.MSS and e.bias == bias
@@ -476,12 +518,24 @@ class MonthlyDailyHourlyMethod:
             return None
 
         # Detect OBs
-        obs = self.ob_detector.detect_order_blocks(m5_df, 'M5')
         fresh_obs = [ob for ob in obs if ob.fresh and ob.bias == bias]
 
         if not fresh_obs:
             logger.debug(f"No fresh M5 order blocks matching bias {bias.value}")
             return None
+
+        # The entry must be inside the H1 broad range
+        in_range = [
+            ob for ob in fresh_obs
+            if h1_info['low'] <= (ob.high + ob.low) / 2 <= h1_info['high']
+        ]
+        if not in_range:
+            logger.debug(
+                f"No fresh M5 OB inside the H1 range "
+                f"{h1_info['low']:.2f}-{h1_info['high']:.2f} - no signal"
+            )
+            return None
+        fresh_obs = in_range
 
         # Get closest OB to current price
         current_price = m5_df['Close'].iloc[-1]
