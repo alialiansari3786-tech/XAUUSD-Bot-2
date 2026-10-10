@@ -1,7 +1,7 @@
 # Adding Twelve Data API Key to GitHub
 
 ## ⚠️ SECURITY WARNING
-Your API key `2d0afc09cfa64b3fb45f86cb17c11da8` was shared in this conversation.
+Your API key was shared in this conversation.
 
 **Action Required:** After setup, regenerate your API key at:
 https://twelvedata.com/account → API Keys → Regenerate
@@ -20,7 +20,7 @@ https://twelvedata.com/account → API Keys → Regenerate
 
 5. Add the secret:
    - **Name:** `TWELVE_DATA_API_KEY`
-   - **Value:** `2d0afc09cfa64b3fb45f86cb17c11da8`
+   - **Value:** (paste your Twelve Data key here, never write it in a file)
    - Click **Add secret**
 
 ---
