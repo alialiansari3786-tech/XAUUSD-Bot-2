@@ -117,7 +117,7 @@ class LiquidityMSNRMethod:
             from src.methods.combined_method import CombinedMethod
             combined_method = CombinedMethod(data_fetcher)
         if percentage_method is None:
-            from src.methods.percentage_method import PercentageMethod
+            from src.methods.monthly_daily_hourly_method import PercentageMethod
             percentage_method = PercentageMethod(data_fetcher)
         self.combined_method = combined_method
         self.percentage_method = percentage_method
