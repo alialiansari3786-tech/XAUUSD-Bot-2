@@ -127,7 +127,7 @@ Ensure these 3 secrets exist and are correct:
 
 1. **TELEGRAM_BOT_TOKEN** - Your Telegram bot token
 2. **TELEGRAM_CHAT_ID** - Your Telegram chat ID  
-3. **TWELVE_DATA_API_KEY** - `2d0afc09cfa64b3fb45f86cb17c11da8`
+3. **TWELVE_DATA_API_KEY** - your Twelve Data key (never write it in a file)
 
 **Important:** Add a 4th secret if missing:
 
