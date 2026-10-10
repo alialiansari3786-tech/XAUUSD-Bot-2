@@ -102,9 +102,13 @@ class MonthlyDailyHourlyMethod:
         timeframes = ['MN', 'D1', 'H1', 'M5']
         data = self.data_fetcher.fetch_multiple_timeframes(timeframes)
 
-        if not all(tf in data for tf in ['D1', 'H1', 'M5']):
-            logger.warning("Missing required timeframe data")
+        if 'H1' not in data:
+            logger.warning("Missing required H1 data")
             return None
+
+        for tf in ['MN', 'D1', 'M5']:
+            if tf not in data:
+                logger.info(f"{tf} data unavailable - continuing without it")
 
         # Step 1: Get Monthly direction (rough target projection)
         monthly_direction, monthly_target = self._analyze_monthly(data.get('MN'))
