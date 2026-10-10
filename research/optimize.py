@@ -28,7 +28,7 @@ import src.utils.params as pm
 import src.core.msnr_detector as msnr_mod
 import src.methods.liquidity_msnr_method as m3mod
 from src.methods.combined_method import CombinedMethod
-from src.methods.percentage_method import PercentageMethod
+from src.methods.monthly_daily_hourly_method import PercentageMethod
 
 MAX_TRIALS = int(os.getenv('OPT_MAX_TRIALS', '200'))
 MIN_TRADES = int(os.getenv('OPT_MIN_TRADES', '30'))
