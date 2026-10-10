@@ -14,7 +14,7 @@ import pytz
 from config.settings import settings
 from src.core.data_fetcher import DataFetcher
 from src.methods.combined_method import CombinedMethod
-from src.methods.monthly_daily_hourly_method import PercentageMethod
+from src.methods.monthly_daily_hourly_method import MonthlyDailyHourlyMethod
 from src.methods.liquidity_msnr_method import LiquidityMSNRMethod
 from src.integrations.telegram_bot import TelegramNotifier
 from src.integrations.chart_generator import ChartGenerator
@@ -48,7 +48,7 @@ class TradingBot:
         # Initialize components
         self.data_fetcher = DataFetcher()
         self.combined_method = CombinedMethod(self.data_fetcher)
-        self.percentage_method = PercentageMethod(self.data_fetcher)
+        self.percentage_method = MonthlyDailyHourlyMethod(self.data_fetcher)
         # Method 3 no longer computes its own bias - it shares Combined
         # and Percentage Method's instances to read their current 1H
         # bias via get_current_bias() (see bias_scheduler.py), rather
@@ -210,13 +210,13 @@ class TradingBot:
 
                 # Method 2: Percentage Method
                 try:
-                    logger.info("Running Percentage Method...")
+                    logger.info("Running Monthly-Daily-Hourly Method...")
                     signal = self.percentage_method.analyze()
                     if signal:
                         signals.append(signal)
-                        logger.info(f"✓ Percentage Method signal: {signal.bias.value}")
+                        logger.info(f"✓ Monthly-Daily-Hourly Method signal: {signal.bias.value}")
                 except Exception as e:
-                    logger.error(f"Percentage Method error: {e}")
+                    logger.error(f"Monthly-Daily-Hourly Method error: {e}")
                     logger.debug(traceback.format_exc())
 
                 # Method 3: Liquidity MSNR Method
@@ -383,7 +383,7 @@ class TradingBot:
             self.telegram.send_status_update_sync(
                 f"🚀 Bot started\n"
                 f"Scan interval: {settings.SCAN_INTERVAL_MINUTES} minutes\n"
-                f"Methods: Combined, Percentage, Liquidity SAR\n"
+                f"Methods: Combined, Monthly-Daily-Hourly, Liquidity MSNR\n"
                 f"Market Hours Filter: Enabled ✅\n"
                 f"Market Status: {market_status}\n"
                 f"Time: {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}"
