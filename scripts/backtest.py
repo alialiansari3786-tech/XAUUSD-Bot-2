@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.core.data_fetcher import DataFetcher
 from src.methods.combined_method import CombinedMethod
-from src.methods.percentage_method import PercentageMethod
+from src.methods.monthly_daily_hourly_method import PercentageMethod
 from src.methods.liquidity_msnr_method import LiquidityMSNRMethod
 from src.utils.logger import setup_logger
 from config.settings import settings
