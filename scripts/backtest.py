@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.core.data_fetcher import DataFetcher
 from src.methods.combined_method import CombinedMethod
-from src.methods.monthly_daily_hourly_method import PercentageMethod
+from src.methods.monthly_daily_hourly_method import MonthlyDailyHourlyMethod
 from src.methods.liquidity_msnr_method import LiquidityMSNRMethod
 from src.utils.logger import setup_logger
 from config.settings import settings
@@ -38,7 +38,7 @@ class Backtester:
         """
         self.data_fetcher = DataFetcher(use_csv=use_csv)
         self.combined_method = CombinedMethod(self.data_fetcher)
-        self.percentage_method = PercentageMethod(self.data_fetcher)
+        self.percentage_method = MonthlyDailyHourlyMethod(self.data_fetcher)
         self.liquidity_msnr_method = LiquidityMSNRMethod(
             self.data_fetcher,
             combined_method=self.combined_method,
