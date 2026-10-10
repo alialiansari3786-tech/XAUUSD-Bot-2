@@ -164,7 +164,7 @@ class TelegramNotifier:
             if signal.weekly_pullback:
                 message += f"✓ Weekly Pullback Trade\n"
 
-        elif signal.method == "Percentage Method":
+        elif signal.method == "Monthly-Daily-Hourly":
             message += f"📐 *Daily Pullback:* {signal.daily_pullback_pct:.1f}%\n"
             message += f"📐 *H1 Pullback:* {signal.h1_pullback_pct:.1f}%\n"
             message += f"🎯 *Zone:* {signal.zone_type.title()}\n"
