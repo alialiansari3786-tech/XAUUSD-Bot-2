@@ -13,6 +13,7 @@ from src.core.data_fetcher import DataFetcher
 from src.core.structure_detector import StructureDetector, StructureType, Bias
 from src.core.order_block_detector import OrderBlockDetector
 from src.core.fvg_detector import FVGDetector
+from src.core.daily_structure import analyze_daily_structure
 from src.utils.confluence_scorer import ConfluenceScorer, ConfluenceFactors
 from src.utils.params import get_param
 from src.utils.logger import setup_logger
@@ -46,9 +47,10 @@ class MonthlyDailyHourlySignal:
     confluence_score: int = 0
     confluence_details: List[str] = None
 
-    # Monthly projection
-    monthly_target: Optional[float] = None
-    monthly_direction: str = ""
+    # Monthly OB (information only - never blocks a trade, sets no trend or target)
+    monthly_ob_low: Optional[float] = None
+    monthly_ob_high: Optional[float] = None
+    price_at_monthly_ob: bool = False
 
 
 class MonthlyDailyHourlyMethod:
@@ -110,8 +112,17 @@ class MonthlyDailyHourlyMethod:
             if tf not in data:
                 logger.info(f"{tf} data unavailable - continuing without it")
 
-        # Step 1: Get Monthly direction (rough target projection)
-        monthly_direction, monthly_target = self._analyze_monthly(data.get('MN'))
+        # D1 gives the Daily bias and M5 gives the entry. What to do when they
+        # are missing will be decided in a later correction; for now no signal.
+        if 'D1' not in data:
+            logger.warning("D1 data unavailable - no Daily bias, no signal")
+            return None
+        if 'M5' not in data:
+            logger.warning("M5 data unavailable - no entry timeframe, no signal")
+            return None
+
+        # Step 1: Monthly OB (information only)
+        monthly_ob = self._find_monthly_ob(data.get('MN'), data['D1']['Close'].iloc[-1])
 
         # Step 2: Check Daily structure and pullback
         daily_valid, daily_info = self._analyze_daily_structure(data['D1'])
@@ -130,8 +141,7 @@ class MonthlyDailyHourlyMethod:
             data['M5'],
             daily_info,
             h1_info,
-            monthly_direction,
-            monthly_target
+            monthly_ob
         )
 
         if signal:
@@ -139,39 +149,90 @@ class MonthlyDailyHourlyMethod:
 
         return signal
 
-    def _analyze_monthly(
+    def _find_monthly_ob(
         self,
-        monthly_df: Optional[pd.DataFrame]
-    ) -> Tuple[str, Optional[float]]:
+        monthly_df: Optional[pd.DataFrame],
+        current_price: float
+    ) -> Optional[Dict]:
         """
-        Analyze monthly timeframe for target projection
+        Monthly only gives a fresh Monthly OB showing how far Daily price
+        can go. It never sets the trend or a target and never blocks a
+        trade. Uses all available Monthly candles (15 years = 180 wanted).
 
-        Returns:
-            (direction, target_price)
+        Returns the fresh Monthly OB nearest to current price, or None.
         """
 
-        n = get_param('percentage', 'monthly_lookback_candles', 3)
-        if monthly_df is None or monthly_df.empty or len(monthly_df) < n:
-            return "neutral", None
+        min_candles = 180  # 15 years of Monthly candles
+        if monthly_df is None or monthly_df.empty:
+            logger.info("Monthly data unavailable - no Monthly OB")
+            return None
+        if len(monthly_df) < min_candles:
+            logger.warning(
+                f"Only {len(monthly_df)} Monthly candles (15 years = {min_candles}) - using what is available"
+            )
 
-        # Get last n monthly candles
-        recent = monthly_df.tail(n)
+        obs = self.ob_detector.detect_order_blocks(monthly_df, 'MN')
+        fresh = [ob for ob in obs if ob.fresh]
+        if not fresh:
+            logger.debug("No fresh Monthly OB found")
+            return None
 
-        # Simple trend determination
-        if recent['Close'].iloc[-1] > recent['Close'].iloc[0]:
-            direction = "bullish"
-            # Project target as recent high + average range
-            avg_range = (recent['High'] - recent['Low']).mean()
-            target = recent['High'].max() + avg_range
-        else:
-            direction = "bearish"
-            avg_range = (recent['High'] - recent['Low']).mean()
-            target = recent['Low'].min() - avg_range
+        def distance(ob):
+            if ob.low <= current_price <= ob.high:
+                return 0.0
+            return min(abs(current_price - ob.low), abs(current_price - ob.high))
 
-        logger.debug(f"Monthly direction: {direction}, target: {target}")
-        return direction, target
+        nearest = min(fresh, key=distance)
+        inside = nearest.low <= current_price <= nearest.high
+        logger.debug(
+            f"Nearest fresh Monthly OB: {nearest.low:.2f}-{nearest.high:.2f} "
+            f"({nearest.bias.value}), price inside: {inside}"
+        )
+        return {
+            'low': nearest.low,
+            'high': nearest.high,
+            'bias': nearest.bias,
+            'price_inside': inside
+        }
 
     def _analyze_daily_structure(
+        self,
+        daily_df: pd.DataFrame
+    ) -> Tuple[bool, Dict]:
+        """
+        Daily structure (see daily_structure.py): finds the MSS direction,
+        Recent STH and New STH confirmation point. Passes as soon as all
+        three exist, whatever the pullback. Marks the main POIs (fresh OBs
+        and the FVGs overlapping them) in the leg. They are stored for 1H
+        confluence only and have no effect on the result.
+        """
+
+        info = {}
+
+        structure = analyze_daily_structure(daily_df)
+        if not structure.valid:
+            logger.debug("No Daily MSS found - Daily direction not confirmed")
+            return False, info
+
+        info['structure'] = structure
+        info['bias'] = structure.bias
+        info['pullback_pct'] = structure.pullback_pct * 100
+        info['fib'] = structure.fib
+
+        leg_df = daily_df.loc[structure.recent_sth_time:]
+        obs = self.ob_detector.detect_order_blocks(leg_df, 'D1')
+        fresh_obs = [ob for ob in obs if ob.fresh and ob.bias == structure.bias]
+        fvgs = self.fvg_detector.detect_fvgs(leg_df, 'D1')
+        fresh_fvgs = [f for f in fvgs if f.fresh and f.bias == structure.bias]
+
+        info['obs'] = fresh_obs
+        info['fvgs'] = [
+            c['fvg'] for c in self.fvg_detector.check_fvg_ob_confluence(fresh_fvgs, fresh_obs)
+        ]
+
+        return True, info
+
+    def _analyze_daily_structure_old(
         self,
         daily_df: pd.DataFrame
     ) -> Tuple[bool, Dict]:
@@ -377,8 +438,7 @@ class MonthlyDailyHourlyMethod:
         m5_df: pd.DataFrame,
         daily_info: Dict,
         h1_info: Dict,
-        monthly_direction: str,
-        monthly_target: Optional[float]
+        monthly_ob: Optional[Dict]
     ) -> Optional[MonthlyDailyHourlySignal]:
         """
         Find M5 entry point
@@ -462,8 +522,9 @@ class MonthlyDailyHourlyMethod:
             daily_pullback_pct=daily_info['pullback_pct'],
             h1_pullback_pct=h1_info['pullback_pct'],
             in_premium_discount=True,
-            monthly_target=monthly_target,
-            monthly_direction=monthly_direction,
+            monthly_ob_low=monthly_ob['low'] if monthly_ob else None,
+            monthly_ob_high=monthly_ob['high'] if monthly_ob else None,
+            price_at_monthly_ob=monthly_ob['price_inside'] if monthly_ob else False,
             confluence_score=confluence_result['score'],
             confluence_details=confluence_result['details']
         )
