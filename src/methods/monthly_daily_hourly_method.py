@@ -523,6 +523,8 @@ class MonthlyDailyHourlyMethod:
         for ob in self.ob_detector.detect_order_blocks(m5_df, 'M5'):
             if not ob.fresh or ob.bias != bias:
                 continue
+            if ob.timestamp < m5.recent_sth_time:  # only OBs formed inside the current leg
+                continue
             if bull and ob.high > level_375:
                 continue
             if not bull and ob.low < level_375:
@@ -589,7 +591,7 @@ class MonthlyDailyHourlyMethod:
         details.append("Counter-1H trade" if counter_h1 else "With the 1H trend")
 
         signal = MonthlyDailyHourlySignal(
-            timestamp=best.timestamp,
+            timestamp=m5.recent_sth_time,  # one signal per leg
             bias=bias,
             entry_price=entry,
             entry_timeframe='M5',
@@ -613,12 +615,31 @@ class MonthlyDailyHourlyMethod:
             if (bull and ob.bias == Bias.BEARISH and ob.low > entry)
             or (not bull and ob.bias == Bias.BULLISH and ob.high < entry)
         ]
+        h1_ob_tp = None
         if h1_targets:
-            take_profit = min(ob.low for ob in h1_targets) if bull else max(ob.high for ob in h1_targets)
-            tp_source = "closest H1 OB"
+            h1_ob_tp = min(ob.low for ob in h1_targets) if bull else max(ob.high for ob in h1_targets)
+
+        if counter_h1:
+            # Counter-1H: closest fresh H1 OB, else the M5 confirmation point
+            if h1_ob_tp is not None:
+                take_profit, tp_source = h1_ob_tp, "closest H1 OB"
+            else:
+                take_profit, tp_source = m5.confirmation, "M5 confirmation point"
         else:
-            take_profit = m5.confirmation
-            tp_source = "M5 confirmation point"
+            # With the 1H trend: closest of H1 OB, M5 confirmation point, H1 confirmation point
+            options = [
+                (h1_ob_tp, "closest H1 OB"),
+                (m5.confirmation, "M5 confirmation point"),
+                (h1_info['structure'].confirmation, "H1 confirmation point"),
+            ]
+            beyond = [
+                (p, s) for p, s in options
+                if p is not None and (p > entry if bull else p < entry)
+            ]
+            if beyond:
+                take_profit, tp_source = min(beyond, key=lambda x: abs(x[0] - entry))
+            else:
+                take_profit, tp_source = m5.confirmation, "M5 confirmation point"
 
         if (bull and take_profit <= entry) or (not bull and take_profit >= entry):
             logger.debug("TP is not beyond the entry - no signal")
@@ -638,6 +659,7 @@ class MonthlyDailyHourlyMethod:
         )
 
         tags = [
+            "Entry 1 (MSS leg)" if m5.recent_sth_time <= m5.mss_time else "Re-entry (new leg)",
             "Counter-1H trade" if counter_h1 else "With the 1H trend",
             f"Entry OB: {entry_ob_label}",
             f"TP: {tp_source}",
