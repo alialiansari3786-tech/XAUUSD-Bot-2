@@ -621,10 +621,13 @@ class MonthlyDailyHourlyMethod:
 
         if counter_h1:
             # Counter-1H: closest fresh H1 OB, else the M5 confirmation point
+            m5_conf_ok = m5.confirmation > entry if bull else m5.confirmation < entry
             if h1_ob_tp is not None:
                 take_profit, tp_source = h1_ob_tp, "closest H1 OB"
-            else:
+            elif m5_conf_ok:
                 take_profit, tp_source = m5.confirmation, "M5 confirmation point"
+            else:
+                take_profit, tp_source = None, ""
         else:
             # With the 1H trend: closest of H1 OB, M5 confirmation point, H1 confirmation point
             options = [
@@ -639,11 +642,13 @@ class MonthlyDailyHourlyMethod:
             if beyond:
                 take_profit, tp_source = min(beyond, key=lambda x: abs(x[0] - entry))
             else:
-                take_profit, tp_source = m5.confirmation, "M5 confirmation point"
+                take_profit, tp_source = None, ""
 
-        if (bull and take_profit <= entry) or (not bull and take_profit >= entry):
-            logger.debug("TP is not beyond the entry - no signal")
-            return None
+        # No TP found by these rules: standard 1:3 risk to reward
+        if take_profit is None:
+            risk = abs(entry - stop_loss)
+            take_profit = entry + risk * 3.0 if bull else entry - risk * 3.0
+            tp_source = "1:3 risk to reward"
 
         signal.take_profit = take_profit
         signal.zone_type = "discount" if bull else "premium"
