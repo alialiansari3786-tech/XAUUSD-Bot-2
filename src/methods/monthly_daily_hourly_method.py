@@ -80,9 +80,11 @@ class MonthlyDailyHourlyMethod:
         Returns None if Daily structure isn't valid, or H1 doesn't
         confirm it (no bias to report).
         """
-        daily_valid, daily_info = self._analyze_daily_structure(data['D1'])
-        if not daily_valid:
-            return None
+        daily_info = {}
+        if 'D1' in data:
+            daily_valid, daily_info = self._analyze_daily_structure(data['D1'])
+            if not daily_valid:
+                daily_info = {}
 
         h1_valid, h1_info = self._analyze_h1_structure(data['H1'], daily_info)
         if not h1_valid:
@@ -112,23 +114,24 @@ class MonthlyDailyHourlyMethod:
             if tf not in data:
                 logger.info(f"{tf} data unavailable - continuing without it")
 
-        # D1 gives the Daily bias and M5 gives the entry. What to do when they
-        # are missing will be decided in a later correction; for now no signal.
-        if 'D1' not in data:
-            logger.warning("D1 data unavailable - no Daily bias, no signal")
-            return None
+        # D1 only gives the HTF bias and never blocks a signal. M5 is the
+        # entry timeframe, so without it there is nothing to enter on.
         if 'M5' not in data:
             logger.warning("M5 data unavailable - no entry timeframe, no signal")
             return None
 
         # Step 1: Monthly OB (information only)
-        monthly_ob = self._find_monthly_ob(data.get('MN'), data['D1']['Close'].iloc[-1])
+        monthly_ob = self._find_monthly_ob(data.get('MN'), data['H1']['Close'].iloc[-1])
 
-        # Step 2: Check Daily structure and pullback
-        daily_valid, daily_info = self._analyze_daily_structure(data['D1'])
-        if not daily_valid:
-            logger.debug("Daily structure not valid")
-            return None
+        # Step 2: Daily structure = HTF bias only (never blocks a signal)
+        daily_info = {}
+        if 'D1' in data:
+            daily_valid, daily_info = self._analyze_daily_structure(data['D1'])
+            if not daily_valid:
+                logger.debug("Daily structure not valid - continuing without HTF bias")
+                daily_info = {}
+        else:
+            logger.debug("No D1 data - continuing without HTF bias")
 
         # Step 3: Check H1 structure and pullback
         h1_valid, h1_info = self._analyze_h1_structure(data['H1'], daily_info)
