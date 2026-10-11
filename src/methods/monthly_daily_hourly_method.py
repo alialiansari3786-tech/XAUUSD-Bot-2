@@ -219,6 +219,11 @@ class MonthlyDailyHourlyMethod:
         info['pullback_pct'] = structure.pullback_pct * 100
         info['fib'] = structure.fib
 
+        # All fresh D1 OBs (only a reversal sign, never required)
+        info['all_obs'] = [
+            ob for ob in self.ob_detector.detect_order_blocks(daily_df, 'D1') if ob.fresh
+        ]
+
         leg_df = daily_df.loc[structure.recent_sth_time:]
         obs = self.ob_detector.detect_order_blocks(leg_df, 'D1')
         fresh_obs = [ob for ob in obs if ob.fresh and ob.bias == structure.bias]
@@ -344,6 +349,11 @@ class MonthlyDailyHourlyMethod:
         # Broad trading range: Recent STH/STL to the confirmation point
         info['low'] = min(structure.recent_sth, structure.confirmation)
         info['high'] = max(structure.recent_sth, structure.confirmation)
+
+        # All fresh H1 OBs from the last 1000 candles (M5+H1 alignment and TP)
+        info['all_obs'] = [
+            ob for ob in self.ob_detector.detect_order_blocks(h1_df.tail(1000), 'H1') if ob.fresh
+        ]
 
         leg_df = h1_df.loc[structure.recent_sth_time:]
         obs = self.ob_detector.detect_order_blocks(leg_df, 'H1')
@@ -533,7 +543,15 @@ class MonthlyDailyHourlyMethod:
                 return 0.0
             return min(abs(price - ob.low), abs(price - ob.high))
 
-        best = min(candidates, key=distance)
+        # An M5 OB overlapping a fresh H1 OB (M5+H1) beats a plain M5 OB.
+        # If there is no M5+H1 OB, use the closest plain M5 OB.
+        h1_same = [ob for ob in h1_info.get('all_obs', []) if ob.bias == bias]
+        aligned = [
+            ob for ob in candidates
+            if any(h.low <= ob.high and h.high >= ob.low for h in h1_same)
+        ]
+        entry_ob_label = "M5+H1" if aligned else "M5 only"
+        best = min(aligned if aligned else candidates, key=distance)
 
         # Entry = the edge price touches first; SL = M5 Recent STH/STL
         entry = best.high if bull else best.low
@@ -587,13 +605,48 @@ class MonthlyDailyHourlyMethod:
             confluence_details=details
         )
 
-        # TP unchanged for now: the edge of the H1 range in the trade direction
-        if bull:
-            signal.take_profit = h1_info['high']
-            signal.zone_type = "discount"
+        # TP: closest fresh H1 OB beyond the entry (supply above for a buy,
+        # demand below for a sell), at its near edge. If there is none, the
+        # M5 confirmation point.
+        h1_targets = [
+            ob for ob in h1_info.get('all_obs', [])
+            if (bull and ob.bias == Bias.BEARISH and ob.low > entry)
+            or (not bull and ob.bias == Bias.BULLISH and ob.high < entry)
+        ]
+        if h1_targets:
+            take_profit = min(ob.low for ob in h1_targets) if bull else max(ob.high for ob in h1_targets)
+            tp_source = "closest H1 OB"
         else:
-            signal.take_profit = h1_info['low']
-            signal.zone_type = "premium"
+            take_profit = m5.confirmation
+            tp_source = "M5 confirmation point"
+
+        if (bull and take_profit <= entry) or (not bull and take_profit >= entry):
+            logger.debug("TP is not beyond the entry - no signal")
+            return None
+
+        signal.take_profit = take_profit
+        signal.zone_type = "discount" if bull else "premium"
+
+        # D1 / D1+H1 OBs are only a reversal sign, never required
+        d1_same = [ob for ob in daily_info.get('all_obs', []) if ob.bias == bias]
+        at_d1 = any(d.low <= best.high and d.high >= best.low for d in d1_same)
+        at_d1_h1 = any(
+            max(d.low, h.low) <= min(d.high, h.high)
+            and max(d.low, h.low) <= best.high
+            and min(d.high, h.high) >= best.low
+            for d in d1_same for h in h1_same
+        )
+
+        tags = [
+            "Counter-1H trade" if counter_h1 else "With the 1H trend",
+            f"Entry OB: {entry_ob_label}",
+            f"TP: {tp_source}",
+        ]
+        if at_d1_h1:
+            tags.append("Entry at a D1+H1 OB zone (reversal sign)")
+        elif at_d1:
+            tags.append("Entry at a D1 OB (reversal sign)")
+        signal.confluence_details = tags + [d for d in signal.confluence_details if d not in tags]
 
         return signal
 
