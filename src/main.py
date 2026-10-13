@@ -181,18 +181,6 @@ class TradingBot:
             # Twelve Data secondary, yfinance tertiary.
             self.data_fetcher.reset_cycle_sources()
 
-            # Get current price
-            current_price = self.data_fetcher.get_latest_price()
-            if current_price:
-                logger.info(f"Current XAUUSD price: {current_price:.2f}")
-                try:
-                    self.telegram.send_status_update_sync(
-                        f"💰 Current XAUUSD Price: {current_price:.2f}\n"
-                        f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to send current price update: {e}")
-
             signals = []
 
             # Run all methods if enabled
