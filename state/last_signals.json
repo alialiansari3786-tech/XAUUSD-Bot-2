@@ -12,5 +12,9 @@
   "Monthly-Daily-Hourly": {
     "bias": "Bullish",
     "setup_key": "2026-10-28 07:00:00"
+  },
+  "Liquidity MSNR Method": {
+    "bias": "Bearish",
+    "setup_key": "2026-10-28 22:25:00"
   }
 }
