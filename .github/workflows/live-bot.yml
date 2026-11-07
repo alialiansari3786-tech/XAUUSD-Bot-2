@@ -1,12 +1,7 @@
 name: XAUUSD Live Trading Bot
 
 on:
-  schedule:
-    # Every 15 minutes, but off the :00/:15/:30/:45 slots, which GitHub
-    # delays or drops most often when its servers are busy
-    - cron: '3,18,33,48 * * * *'
-
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:  # Triggered by cron-job.org (and manually)
 
 jobs:
   scan-and-signal:
