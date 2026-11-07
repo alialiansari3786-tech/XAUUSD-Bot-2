@@ -1,7 +1,7 @@
 name: XAUUSD Live Trading Bot
 
 on:
-  workflow_dispatch:  # Triggered by cron-job.org (and manually)
+  workflow_dispatch:  # Allow manual trigger
 
 jobs:
   scan-and-signal:
